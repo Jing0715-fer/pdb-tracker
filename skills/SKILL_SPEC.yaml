@@ -1,0 +1,184 @@
+# OpenClaw/Claude Code Skill Specification
+
+## PDB Weekly Skill
+
+```yaml
+name: pdb-weekly
+version: 1.0.0
+description: Generate weekly PDB structure reports
+type: command
+
+commands:
+  generate:
+    description: Generate weekly PDB report
+    parameters:
+      week:
+        type: string
+        description: Week identifier (e.g., 2024-W01)
+        required: false
+      force:
+        type: boolean
+        description: Force refresh data
+        default: false
+    returns: Path to generated report
+    
+  list:
+    description: List available weekly reports
+    parameters:
+      limit:
+        type: integer
+        description: Maximum number of reports to list
+        default: 10
+        
+  summary:
+    description: Get summary statistics for a week
+    parameters:
+      week:
+        type: string
+        description: Week identifier
+        required: true
+    returns: JSON with statistics
+
+installation:
+  steps:
+    - git clone https://github.com/Jing0715-fer/pdb-tracker.git
+    - pip install -e pdb-tracker
+    - pdb-tracker init
+  
+  requirements:
+    python: ">=3.8"
+    packages:
+      - requests
+      - sqlite3
+```
+
+## Target Evaluation Skill
+
+```yaml
+name: target-evaluation
+version: 1.0.0
+description: Evaluate protein target structure feasibility
+type: command
+
+commands:
+  evaluate:
+    description: Evaluate a protein target
+    parameters:
+      uniprot_id:
+        type: string
+        description: UniProt accession ID
+        required: true
+      force:
+        type: boolean
+        description: Force refresh data
+        default: false
+      format:
+        type: string
+        description: Output format
+        enum: [markdown, json]
+        default: markdown
+    returns: Path to generated report
+    
+  batch:
+    description: Evaluate multiple targets
+    parameters:
+      file:
+        type: string
+        description: Path to file containing UniProt IDs
+        required: true
+      method:
+        type: string
+        description: Focus on specific method
+        enum: [cryoem, xray, nmr, all]
+        default: all
+        
+  list:
+    description: List evaluated targets
+    parameters:
+      method:
+        type: string
+        description: Filter by method
+      min_score:
+        type: integer
+        description: Minimum feasibility score
+        
+  compare:
+    description: Compare multiple targets
+    parameters:
+      targets:
+        type: array
+        items:
+          type: string
+        description: List of UniProt IDs
+        required: true
+
+installation:
+  steps:
+    - git clone https://github.com/Jing0715-fer/pdb-tracker.git
+    - pip install -e pdb-tracker
+    - pdb-tracker init
+  
+  requirements:
+    python: ">=3.8"
+    packages:
+      - requests
+      - sqlite3
+```
+
+## Web UI Integration
+
+```yaml
+web_ui:
+  enabled: true
+  port: 5555
+  host: "0.0.0.0"
+  
+  features:
+    - weekly_mode:
+        description: Weekly PDB structure browser
+        endpoints:
+          - /api/snapshots
+          - /api/entries
+          - /api/reports/list
+          
+    - evaluation_mode:
+        description: Target evaluation interface
+        endpoints:
+          - /api/evaluations
+          - /api/evaluations/{uniprot_id}
+          - /api/evaluation/reports/list
+          
+    - visualization:
+        - structure_table
+        - method_distribution
+        - resolution_histogram
+        - coverage_chart
+```
+
+## Environment Variables
+
+```bash
+# Required
+export PDB_TRACKER_DB="${HOME}/.pdb-tracker/pdb_tracker.db"
+export PDB_TRACKER_OUTPUT="${HOME}/Documents/PDB_Tracker"
+
+# Optional
+export PDB_TRACKER_CACHE_TTL="7"  # days
+export PDB_TRACKER_LOG_LEVEL="INFO"
+
+# LLM Integration (optional)
+export OPENAI_API_KEY="your-key"
+export ANTHROPIC_API_KEY="your-key"
+```
+
+## File Locations
+
+```
+~/.pdb-tracker/
+├── config.yaml          # User configuration
+├── pdb_tracker.db       # SQLite database
+├── cache/               # API response cache
+│   ├── pdb/
+│   └── uniprot/
+└── logs/                # Application logs
+```

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PDB Tracker</title>
+<style>
+:root{--bg:#0d1526;--card:#131929;--border:#1e2535;--text:#e4e4e7;--muted:#71717a;--primary:#06b6d4;--secondary:#a855f7;--success:#22c55e;--danger:#ef4444;--accent:#3b82f6}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;display:flex;flex-direction:column}
+.app{display:flex;flex:1;overflow:hidden}
+
+/* Header */
+.header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+.header h1{font-size:1.1rem;font-weight:600}
+.header h1 span{color:var(--muted);font-weight:400;font-size:0.85rem;margin-left:8px}
+.header-right{display:flex;gap:12px;align-items:center}
+
+/* Mode toggle */
+.mode-toggle{display:flex;gap:4px;background:var(--bg);border-radius:8px;padding:3px}
+.mode-btn{padding:6px 14px;border-radius:6px;font-size:0.8rem;cursor:pointer;border:none;background:none;color:var(--muted)}
+.mode-btn.active{background:var(--card);color:var(--text)}
+
+/* Sidebar */
+.sidebar{width:220px;background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+.sidebar-section{flex:1;overflow-y:auto;padding:12px}
+.sidebar-section:not(:last-child){border-bottom:1px solid var(--border)}
+.sidebar-header{padding:8px 12px 4px;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)}
+#week-list{display:flex;flex-direction:column;gap:6px}
+.week-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;cursor:pointer;transition:all 0.15s;font-size:0.8rem}
+.week-card:hover{border-color:var(--primary)}
+.week-card.active{border-color:var(--primary);background:rgba(6,182,212,0.08)}
+.w-id{font-weight:600;color:var(--primary);font-size:0.75rem}
+.w-dates{color:var(--muted);font-size:0.7rem;margin:2px 0}
+.w-stats{display:flex;gap:6px;margin-top:4px}
+.week-stat{font-size:0.65rem;padding:1px 5px;border-radius:4px}
+.wstat-em{background:rgba(6,182,212,0.15);color:var(--primary)}
+.wstat-xr{background:rgba(245,158,11,0.15);color:#f59e0b}
+.wstat-tot{background:rgba(255,255,255,0.08);color:var(--text)}
+#report-list{display:flex;flex-direction:column;gap:4px}
+.report-item{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;cursor:pointer;transition:all 0.15s;font-size:0.75rem}
+.report-item:hover{border-color:var(--secondary)}
+.report-item.active{border-color:var(--secondary);background:rgba(168,85,247,0.08)}
+.rname{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rtitle{color:var(--muted);font-size:0.7rem;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rdate{color:var(--muted);font-size:0.65rem;margin-top:2px}
+.report-empty{color:var(--muted);font-size:0.8rem;text-align:center;padding:20px}
+
+/* Main */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+
+/* Toolbar */
+.toolbar{padding:10px 16px;background:var(--card);border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.toolbar select,.toolbar input{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:0.8rem}
+.toolbar input[type=text]{min-width:160px}
+.toolbar select{min-width:100px}
+.toolbar button{background:var(--primary);color:#000;border:none;border-radius:6px;padding:7px 14px;font-size:0.8rem;cursor:pointer;font-weight:500}
+.toolbar button:hover{opacity:0.9}
+.toolbar button.reset{background:var(--bg);border:1px solid var(--border);color:var(--text)}
+#entry-count{font-size:0.8rem;color:var(--muted);margin-left:auto}
+
+/* Table */
+.table-wrap{flex:1;overflow:auto;padding:0 16px 16px}
+table{width:100%;border-collapse:collapse;font-size:0.8rem}
+#table-head th{background:var(--card);padding:10px 12px;text-align:left;font-weight:500;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);cursor:pointer;white-space:nowrap;position:sticky;top:0;z-index:10;border-bottom:1px solid var(--border)}
+#table-head th:hover{color:var(--text)}
+th[data-sorted=true]{color:var(--primary)}
+.sort-arrow{font-size:0.9rem;margin-left:4px}
+td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:hover td{background:rgba(255,255,255,0.02)}
+td.method{padding:6px 12px}
+.pdb-link{color:var(--primary);cursor:pointer;text-decoration:none;font-weight:600}
+.pdb-link:hover{text-decoration:underline}
+.method-badge{padding:3px 8px;border-radius:12px;font-size:0.7rem;font-weight:500}
+.badge-em{background:rgba(6,182,212,0.15);color:var(--primary)}
+.badge-xr{background:rgba(245,158,11,0.15);color:#f59e0b}
+.badge-nmr{background:rgba(168,85,247,0.15);color:var(--secondary)}
+.badge-oth{background:rgba(255,255,255,0.08);color:var(--muted)}
+.res{font-family:monospace;font-size:0.8rem}
+.res-good{color:var(--success)}
+.res-mid{color:#f59e0b}
+.res-poor{color:var(--danger)}
+.title-cell{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:0.75rem}
+.if-badge{padding:2px 6px;border-radius:4px;font-size:0.65rem;font-weight:700;margin-right:4px}
+.tier-top{background:rgba(239,68,68,0.2);color:#ef4444}
+.tier-high{background:rgba(245,158,11,0.2);color:#f59e0b}
+.tier-mid{background:rgba(34,197,94,0.2);color:#22c55e}
+.if-val{font-size:0.7rem;color:var(--muted)}
+.lig-cell{max-width:100px}
+.lig-chip{display:inline-block;background:rgba(168,85,247,0.15);color:var(--secondary);padding:2px 6px;border-radius:4px;font-size:0.65rem;margin:1px;cursor:pointer}
+.lig-chip:hover{background:rgba(168,85,247,0.3)}
+.preview-empty{text-align:center;padding:40px;color:var(--muted)}
+.preview-empty-icon{font-size:2rem;margin-bottom:8px}
+
+/* Preview Panel */
+#preview-panel{position:relative;width:0;background:var(--card);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:width 0.2s;flex-shrink:0}
+#preview-panel:not(.hidden){width:420px}
+.preview-header{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;flex-shrink:0}
+.preview-header-row{display:flex;justify-content:space-between;align-items:center}
+.preview-header h2{flex:1;font-size:0.95rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#btn-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.2rem;padding:4px 8px}
+#btn-close:hover{color:var(--text)}
+.preview-tabs{display:flex;border-top:1px solid var(--border)}
+.preview-tab{flex:1;padding:8px;text-align:center;font-size:0.8rem;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent}
+.preview-tab:hover{color:var(--text)}
+.preview-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+#preview-content{flex:1;overflow-y:auto;padding:14px}
+
+
+/* Report meta */
+.report-meta{background:var(--bg);border-radius:8px;padding:12px}
+.mr{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}
+.mr:last-child{border-bottom:none}
+.ml{color:var(--muted);font-size:0.8rem}
+.mv{font-weight:500;font-size:0.85rem}
+.md-content{font-size:0.85rem;line-height:1.6}
+.md-content h2{font-size:1rem;margin:12px 0 6px;color:var(--primary)}
+.md-content h3{font-size:0.9rem;margin:10px 0 4px}
+.md-content p{margin:6px 0}
+.md-content ul{margin:6px 0;padding-left:20px}
+.md-content li{margin:3px 0}
+.md-content pre{background:#000;border-radius:6px;padding:10px;overflow-x:auto;font-size:0.75rem;margin:8px 0}
+.md-content code{background:rgba(255,255,255,0.1);padding:1px 5px;border-radius:3px;font-size:0.8rem}
+.md-content strong{color:var(--primary)}
+
+/* Tooltips */
+#tt-pdb{position:fixed;z-index:1000;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;min-width:220px;max-width:280px;box-shadow:0 8px 32px rgba(0,0,0,0.4);pointer-events:none;display:none}
+#tt-pdb.show{display:block}
+.tt-header{font-weight:700;font-size:1rem;color:var(--primary);margin-bottom:6px}
+.tt-row{display:flex;justify-content:space-between;font-size:0.75rem;padding:2px 0}
+.tt-label{color:var(--muted)}
+.tt-value{font-weight:500}
+#tt-pdb-img{width:100%;height:120px;object-fit:contain;background:#000;border-radius:6px;margin-top:8px}
+#tt-pdb-title{font-size:0.7rem;color:var(--muted);margin-top:4px;display:none}
+
+#tt-lig{position:fixed;z-index:1001;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;min-width:200px;max-width:240px;box-shadow:0 8px 32px rgba(0,0,0,0.4);pointer-events:none;display:none}
+#tt-lig.show{display:block}
+#tt-lig-img{width:180px;height:120px;object-fit:contain;background:#fff;border-radius:6px;margin-top:8px}
+
+/* Eval mode */
+#eval-sidebar{display:none;flex-direction:column}
+#eval-list{display:flex;flex-direction:column;gap:4px}
+#eval-search{padding:8px 12px}
+#eval-search input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 10px;color:var(--text);font-size:0.8rem}
+#eval-md-reports{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto;border-top:1px solid var(--border);padding-top:6px}
+#eval-md-reports .sidebar-header{font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);padding:4px 0 4px}
+#eval-md-reports .report-item{padding:5px 8px;font-size:10px;cursor:pointer;border-radius:4px;background:var(--bg);border:1px solid var(--border);transition:background 0.15s}
+#eval-md-reports .report-item:hover{background:rgba(139,92,246,0.1);border-color:rgba(139,92,246,0.3)}
+#eval-md-reports .report-item.active{background:rgba(139,92,246,0.15);border-color:var(--secondary);color:var(--secondary)}
+#eval-md-reports .report-item .rname{font-family:var(--mono);color:var(--secondary);font-size:10px}
+#eval-md-reports .report-item .rtitle{font-size:9px;color:var(--text);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#eval-md-reports .report-item .rdate{color:var(--muted);font-size:9px}
+
+/* Hidden by default in sidebar */
+#sidebar-weeks-header,#week-list,#sidebar-reports-header,#report-list{display:none}
+/* Bottom Drawer */
+#bottom-drawer{position:fixed;bottom:0;left:0;right:0;background:var(--card);border-top:1px solid var(--border);box-shadow:0 -4px 20px rgba(0,0,0,0.4);z-index:100;transform:translateY(100%);transition:transform 0.3s ease;max-height:300px;display:flex;flex-direction:column}
+#bottom-drawer.open{transform:translateY(0)}
+#bottom-drawer-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+#bottom-drawer-title{font-size:0.9rem;font-weight:600}
+#bottom-drawer-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.2rem;padding:4px}
+#bottom-drawer-close:hover{color:var(--text)}
+#bottom-drawer-content{flex:1;overflow-y:auto;padding:12px 16px}
+#bottom-drawer-list{display:flex;flex-direction:column;gap:8px}
+.drawer-item{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;transition:all 0.15s;display:flex;flex-direction:column;gap:4px}
+.drawer-item:hover{border-color:var(--primary)}
+.drawer-item.active{border-color:var(--primary);background:rgba(6,182,212,0.08)}
+.drawer-item .d-name{font-family:var(--mono);font-size:0.8rem;font-weight:600;color:var(--primary)}
+.drawer-item .d-title{font-size:0.75rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.drawer-item .d-date{font-size:0.7rem;color:var(--muted)}
+.drawer-empty{text-align:center;padding:20px;color:var(--muted);font-size:0.85rem}
+.drawer-toggle{position:fixed;bottom:20px;right:20px;background:var(--primary);color:#000;border:none;border-radius:50%;width:50px;height:50px;font-size:1.5rem;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.3);z-index:99;display:none}
+.drawer-toggle:hover{transform:scale(1.05)}
+.drawer-toggle.visible{display:flex;align-items:center;justify-content:center}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>PDB Tracker<span>Structure Database</span></h1>
+  <div class="header-right">
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="btn-mode-weekly">Weekly</button>
+      <button class="mode-btn" id="btn-mode-eval">Evaluation</button>
+    </div>
+  </div>
+</div>
+
+<div class="app">
+  <div class="sidebar">
+    <div class="sidebar-header" id="sidebar-weeks-header">Weeks</div>
+    <div class="sidebar-section" id="week-list"></div>
+    <div class="sidebar-header" id="sidebar-reports-header">Reports</div>
+    <div class="sidebar-section" id="report-list"></div>
+    <div id="eval-sidebar" class="sidebar-section">
+      <div id="eval-search"><input type="text" placeholder="Search UniProt..."></div>
+      <div id="eval-list"></div>
+      <div id="eval-md-reports">
+        <div class="sidebar-header">评估报告</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div id="weekly-toolbar" class="toolbar">
+      <select id="sel-week"><option value="all">All Weeks</option></select>
+      <select id="sel-method"><option value="all">All Methods</option><option value="cryoem">Cryo-EM</option><option value="xray">X-ray</option><option value="nmr">NMR</option></select>
+      <input type="text" id="inp-search" placeholder="Search...">
+      <button id="btn-search">Search</button>
+      <button class="reset" id="btn-reset">Reset</button>
+      <span id="entry-count">0 entries</span>
+    </div>
+
+    <div id="weekly-table" class="table-wrap">
+      <table>
+        <thead id="table-head">
+          <tr>
+            <th data-col="pdb_id">PDB <span class="sort-arrow">&#8645;</span></th>
+            <th data-col="method">Method <span class="sort-arrow">&#8645;</span></th>
+            <th data-col="resolution">Res <span class="sort-arrow">&#8645;</span></th>
+            <th data-col="journal_if">IF <span class="sort-arrow">&#8645;</span></th>
+            <th data-col="title">Title <span class="sort-arrow">&#8645;</span></th>
+            <th data-col="release_date">Date <span class="sort-arrow">&#8645;</span></th>
+            <th>Ligands</th>
+          </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+  <div id="preview-panel" class="hidden">
+  <div class="preview-header">
+    <div class="preview-header-row">
+      <h2 id="preview-title">-</h2>
+      <button id="btn-close">✕</button>
+    </div>
+    <div class="preview-tabs">
+      <div class="preview-tab active" data-tab="summary">Summary</div>
+      <div class="preview-tab" data-tab="report">Full Report</div>
+    </div>
+  </div>
+  <div id="preview-content"></div>
+
+</div>
+</div>
+
+<div id="tt-pdb">
+  <div class="tt-header" id="tt-pdb-header">-</div>
+  <div class="tt-row"><span class="tt-label">Method:</span><span class="tt-value" id="tt-pdb-method">-</span></div>
+  <div class="tt-row"><span class="tt-label">Resolution:</span><span class="tt-value" id="tt-pdb-res">-</span></div>
+  <div class="tt-row"><span class="tt-label">Date:</span><span class="tt-value" id="tt-pdb-date">-</span></div>
+  <div class="tt-row"><span class="tt-label">Journal:</span><span class="tt-value" id="tt-pdb-journal">-</span></div>
+  <div class="tt-row"><span class="tt-label">IF:</span><span class="tt-value" id="tt-pdb-if">-</span></div>
+  <div class="tt-row"><span class="tt-label">Ligands:</span><span class="tt-value" id="tt-pdb-ligs">-</span></div>
+  <div id="tt-pdb-title"></div>
+  <img id="tt-pdb-img" style="display:none">
+</div>
+
+<div id="tt-lig">
+  <div class="tt-header" id="tt-lig-header">-</div>
+  <div id="tt-lig-name" style="font-size:0.8rem;margin-bottom:6px">-</div>
+  <img id="tt-lig-img" style="display:none">
+</div>
+
+
+<script src="/pdb_app.js"></script>
+<script>
+// Wait for DOM and JS to be ready before setting up handlers
+document.addEventListener('DOMContentLoaded', function() {
+    // Buttons will be handled by pdb_app.js init()
+});
+// Re-setup onclick after pdb_app.js loads
+window.addEventListener('load', function() {
+    if (typeof setMode === 'function') {
+        document.getElementById('btn-mode-weekly').onclick = function() { setMode('weekly'); };
+        document.getElementById('btn-mode-eval').onclick = function() { setMode('eval'); };
+    }
+});
+</script>
+
+<!-- Bottom Drawer -->
+<div id="bottom-drawer">
+  <div id="bottom-drawer-header">
+    <div id="bottom-drawer-title">Reports</div>
+    <button id="bottom-drawer-close">&times;</button>
+  </div>
+  <div id="bottom-drawer-content">
+    <div id="bottom-drawer-list"></div>
+  </div>
+</div>
+<button id="drawer-toggle" class="drawer-toggle">&#128196;</button>
+
+</body>
+</html>
