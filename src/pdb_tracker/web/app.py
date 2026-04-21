@@ -1,16 +1,31 @@
 #!/usr/bin/env python3
-"""PDB Tracker Web UI — generates JS file at startup to avoid Python string escaping."""
+"""PDB Tracker Web UI — all paths configurable via environment variables (see config.py)."""
 
+import os
 from pathlib import Path
 from flask import Flask, request, jsonify, Response, send_file
-import re, sqlite3, os, time, json, logging
+import re, sqlite3, time, json, logging, shutil
+
+from pdb_tracker import config
 
 app = Flask(__name__)
-WIKI_PATH = Path("/Users/lijing/Documents/my note/LLM Wiki")
-DB_PATH = WIKI_PATH / "data" / "pdb_tracker.db"
-REPORTS_DIR = WIKI_PATH / "wiki" / "pdb_weekly_report"
-SCRIPT_DIR = Path("/tmp/pdb_scripts")
-SCRIPT_DIR.mkdir(exist_ok=True)
+
+# Lazy path cache — resolved on first request so env vars are readable at import time
+_cached_paths = None
+
+
+def paths():
+    global _cached_paths
+    if _cached_paths is None:
+        config.ensure_dirs()
+        _cached_paths = {
+            "db": config.get_db_path(),
+            "weekly_reports": config.get_weekly_reports_dir(),
+            "weekly_summaries": config.get_weekly_summaries_dir(),
+            "evaluations": config.get_evaluations_dir(),
+            "script_dir": config.get_script_dir(),
+        }
+    return _cached_paths
 
 # ─── Generate JS file at startup ───────────────────────────────────────────
 def write_js():
@@ -153,8 +168,8 @@ def write_js():
     L("})();")
 
     from pathlib import Path
-    SCRIPT_DIR = Path("/tmp/pdb_scripts")
-    with open(SCRIPT_DIR / "pdb_app.js", 'w', encoding='utf-8') as f:
+    script_dir = paths()["script_dir"]
+    with open(script_dir / "pdb_app.js", 'w', encoding='utf-8') as f:
         f.writelines(lines)
 
 
@@ -196,7 +211,8 @@ def _migrate_weekly_reports():
     """Import weekly .md files from summaries/ into weekly_reports DB table.
     Idempotent: skips if weekly_reports table already has rows with content."""
     try:
-        if not REPORTS_DIR.exists():
+        reports_dir = paths()["weekly_summaries"]
+        if not reports_dir.exists():
             logging.info("[_migrate_weekly_reports] summaries dir does not exist, skipping")
             return
         conn = get_eval_db()
@@ -207,7 +223,7 @@ def _migrate_weekly_reports():
             logging.info(f"[_migrate_weekly_reports] {count} reports already in DB, skipping migration")
             return
         migrated = 0
-        for f in sorted(REPORTS_DIR.glob("*.md")):
+        for f in sorted(reports_dir.glob("*.md")):
             try:
                 content = f.read_text(encoding='utf-8', errors='ignore')
                 # Check if already in DB by filename
@@ -254,7 +270,7 @@ def _migrate_evaluation_reports():
             logging.info(f"[_migrate_evaluation_reports] {count} reports already in DB, skipping migration")
             return
         migrated = 0
-        eval_dir = EVAL_DATA_DIR
+        eval_dir = paths()["evaluations"]
         if not eval_dir.exists():
             logging.info("[_migrate_evaluation_reports] evaluations dir does not exist, skipping")
             conn.close()
@@ -292,14 +308,14 @@ def _migrate_evaluation_reports():
 
 # ─── Flask routes ───────────────────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(paths()["db"]))
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def get_eval_db():
     """Get a connection to the evaluation database."""
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(paths()["db"]))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -364,7 +380,8 @@ def init_eval_db():
             logging.info('[init_eval_db] DB empty -- migrating from JSON files...')
             import json as _json
             migrated = 0
-            for f in sorted(EVAL_DATA_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
+            eval_dir = paths()["evaluations"]
+            for f in sorted(eval_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
                 try:
                     with open(f, encoding='utf-8') as fp:
                         data = _json.load(fp)
@@ -492,7 +509,7 @@ def api_ligand(code):
 @app.route("/pdb_app.js")
 def serve_js():
     import time, os
-    js_path = SCRIPT_DIR / "pdb_app.js"
+    js_path = paths()["script_dir"] / "pdb_app.js"
     ts = int(js_path.stat().st_mtime)
     resp = send_file(js_path, mimetype="application/javascript")
     resp.headers["Cache-Control"] = "no-cache, must-revalidate"
@@ -501,7 +518,7 @@ def serve_js():
 @app.route("/")
 def index():
     import time
-    html_path = SCRIPT_DIR / "pdb_index.html"
+    html_path = paths()["script_dir"] / "pdb_index.html"
     ts = int(html_path.stat().st_mtime)
     with open(html_path, encoding='utf-8') as f:
         html = f.read()
@@ -509,7 +526,7 @@ def index():
     return Response(html, mimetype='text/html; charset=utf-8')
 
 # ─── Target Evaluation Storage ───────────────────────────────────────────────
-EVAL_DATA_DIR = Path("/Users/lijing/Documents/my note/LLM Wiki/wiki/evaluations")
+# EVAL_DATA_DIR is now resolved via config.get_evaluations_dir()
 
 # Journal Impact Factor lookup (sourced from existing data)
 JOURNAL_IF_MAP = {
@@ -580,11 +597,11 @@ def get_journal_if(journal_name: str) -> float:
     return None
 
 
-EVAL_DATA_DIR.mkdir(exist_ok=True)
+paths()["evaluations"].mkdir(parents=True, exist_ok=True)
 
 def _eval_file(uniprot_id: str) -> Path:
     """JSON file path for an evaluation."""
-    return EVAL_DATA_DIR / f"{uniprot_id}.json"
+    return paths()["evaluations"] / f"{uniprot_id}.json"
 
 def save_evaluation(result: dict) -> bool:
     """Save evaluation result to SQLite DB (primary) and JSON file (backup)."""
@@ -1205,7 +1222,9 @@ def _generate_evaluation_report(data: dict) -> str:
     lines.append(f"# 蛋白质结构可行性评估报告\n")
     lines.append(f"**UniProt ID**: {uniprot.get('uniprot_id', 'N/A')} | **{uniprot.get('protein_name', 'N/A')}**\n")
     lines.append(f"**基因名**: {', '.join(uniprot.get('gene_names', []) or ['N/A'])} | **物种**: {uniprot.get('organism', 'N/A')}\n")
-    lines.append(f"**序列长度**: {uniprot.get('sequence_length', 0)} aa | **分子量**: {(lambda m: f"{m:.0f} Da" if m is not None else "N/A")(uniprot.get('mass'))}\n")
+    mass_val = uniprot.get('mass')
+    mass_str = f"{mass_val:.0f} Da" if mass_val is not None else "N/A"
+    lines.append(f"**序列长度**: {uniprot.get('sequence_length', 0)} aa | **分子量**: {mass_str}\n")
     lines.append(f"**已有PDB结构**: {len(structures)} 个 | **覆盖度**: {coverage:.1f}%\n")
 
     if uniprot.get('function'):
@@ -1441,13 +1460,15 @@ def api_evaluation_report():
 
 # ─── Generate HTML + JS, then start ────────────────────────────────────────
 if __name__ == "__main__":
-    html = open('/tmp/pdb_scripts/pdb_index.html').read() if (SCRIPT_DIR / "pdb_index.html").exists() else None
+    html_path = paths()["script_dir"] / "pdb_index.html"
+    html = html_path.read_text(encoding='utf-8') if html_path.exists() else None
     if not html:
         import urllib.request
         print("HTML file missing — please run /tmp/write_js.py first")
         exit(1)
     write_js()
-    print(f"JS written: {(SCRIPT_DIR / 'pdb_app.js').stat().st_size} bytes")
+    _p = paths()
+    print(f"JS written: {(_p['script_dir'] / 'pdb_app.js').stat().st_size} bytes")
     print("Open: http://localhost:5555")
     init_eval_db()  # Initialize evaluation DB tables on startup
     init_weekly_reports_db()  # Initialize weekly reports DB on startup

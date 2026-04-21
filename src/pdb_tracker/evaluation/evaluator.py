@@ -644,10 +644,11 @@ class TargetEvaluator:
 
 
 if __name__ == "__main__":
-    # Example usage
+    from pdb_tracker import config
+    config.ensure_dirs()
     evaluator = TargetEvaluator(
-        db_path=Path("pdb_tracker.db"),
-        output_dir=Path("evaluations")
+        db_path=config.get_db_path(),
+        output_dir=config.get_evaluations_dir(),
     )
     report_path = evaluator.evaluate("P04637")  # TP53
     print(f"Report generated: {report_path}")

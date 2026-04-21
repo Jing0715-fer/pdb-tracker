@@ -403,10 +403,11 @@ class WeeklyReportGenerator:
 
 
 if __name__ == "__main__":
-    # Example usage
+    from pdb_tracker import config
+    config.ensure_dirs()
     generator = WeeklyReportGenerator(
-        db_path=Path("pdb_tracker.db"),
-        output_dir=Path("weekly_reports")
+        db_path=config.get_db_path(),
+        output_dir=config.get_weekly_reports_dir(),
     )
     report_path = generator.generate_report()
     print(f"Report generated: {report_path}")
