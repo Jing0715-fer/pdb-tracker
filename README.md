@@ -125,9 +125,12 @@ pdb-tracker/
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
 | `PDB_DATA_DIR` | 数据根目录 | `~/.pdb-tracker/` |
+| `PDB_DB_DIR` | 数据库目录 | `$PDB_DATA_DIR/data/` |
 | `PDB_DB_NAME` | SQLite 数据库文件名 | `pdb_tracker.db` |
+| `PDB_RAW_DIR` | 原始数据目录 | `$PDB_DATA_DIR/raw/` |
 | `PDB_WEEKLY_DIR` | 周报 .md 文件目录 | `~/.pdb-tracker/weekly_reports/` |
 | `PDB_EVAL_DIR` | 评估报告目录 | `~/.pdb-tracker/evaluations/` |
+| `PDB_WEB_SCRIPT_DIR` | Web UI 运行时目录 | `$PDB_DATA_DIR/web_scripts/` |
 | `PDB_WEB_HOST` | Web UI 监听地址 | `0.0.0.0` |
 | `PDB_WEB_PORT` | Web UI 端口 | `5555` |
 

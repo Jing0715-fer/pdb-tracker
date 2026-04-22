@@ -34,12 +34,18 @@ python3 skills/pdb-weekly/scripts/pdb_tracker_db.py --backfill-ligands          
 
 **Snapshots: `weekly_snapshots`** — week_id, week_start, week_end, counts, avg_res, etc.
 
-## Key Paths (Hardcoded — Do Not Change)
+## Key Paths (Configurable via Environment Variables)
 
 ```
-DB:     /Users/lijing/Documents/my note/LLM Wiki/data/pdb_tracker.db
-Output: /Users/lijing/Documents/my note/LLM Wiki/wiki/pdb_weekly_report/
-Raw:    /Users/lijing/Documents/my note/LLM Wiki/data/pdb_weekly_raw/
+# Default locations (~/.pdb-tracker/)
+DB:     $PDB_DATA_DIR/data/pdb_tracker.db
+Output: $PDB_DATA_DIR/weekly_reports/
+Raw:    $PDB_DATA_DIR/raw/
+
+# Override with environment variables:
+export PDB_DATA_DIR=/custom/path
+export PDB_DB_DIR=/custom/db/path
+export PDB_WEEKLY_DIR=/custom/output/path
 ```
 
 ## Report Generation Workflow

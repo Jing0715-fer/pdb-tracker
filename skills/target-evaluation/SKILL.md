@@ -21,11 +21,18 @@ Evaluate protein target structure feasibility using existing PDB data with UniPr
 **`pdb_chains`** — PDB↔UniProt mapping
 - `id, pdb_id, asym_id, entity_id, uniprot_accession, uniprot_id, gene_name, organism_tax_id, organism_name, sequence, start_residue, end_residue`
 
-## Key Paths (Hardcoded — Do Not Change)
+## Key Paths (Configurable via Environment Variables)
 
 ```
-DB:     /Users/lijing/Documents/my note/LLM Wiki/data/pdb_tracker.db
-Output: /Users/lijing/Documents/my note/LLM Wiki/wiki/pdb_weekly_report/
+# Default locations (~/.pdb-tracker/)
+DB:     $PDB_DATA_DIR/data/pdb_tracker.db
+Output: $PDB_DATA_DIR/weekly_reports/
+
+# Override with environment variables:
+export PDB_DATA_DIR=/custom/path
+export PDB_DB_DIR=/custom/db/path
+export PDB_WEEKLY_DIR=/custom/output/path
+export PDB_WEB_PORT=8080
 ```
 
 ## Core Script

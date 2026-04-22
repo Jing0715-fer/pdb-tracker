@@ -2,6 +2,12 @@
 """
 PDB + UniProt Tracker Database
 轻量级 SQLite 数据库，用于 PDB 结构追踪和靶点分析
+
+所有路径可通过环境变量配置：
+  PDB_DATA_DIR    - 数据根目录 (默认 ~/.pdb-tracker/)
+  PDB_DB_DIR      - 数据库目录 (默认 $PDB_DATA_DIR/data/)
+  PDB_DB_NAME     - 数据库文件名 (默认 pdb_tracker.db)
+  PDB_RAW_DIR     - 原始数据目录 (默认 $PDB_DATA_DIR/raw/)
 """
 import sqlite3
 import json
@@ -13,10 +19,16 @@ import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# ========== 配置 ==========
-WIKI_PATH = Path("/Users/lijing/Documents/my note/LLM Wiki")
-DB_PATH = WIKI_PATH / "data" / "pdb_tracker.db"
-RAW_DATA_DIR = WIKI_PATH / "data" / "pdb_weekly_raw"
+# ========== 配置 (支持环境变量覆盖) ==========
+def _get_data_dir() -> Path:
+    if os.getenv("PDB_DATA_DIR"):
+        return Path(os.getenv("PDB_DATA_DIR"))
+    return Path.home() / ".pdb-tracker"
+
+DATA_DIR = _get_data_dir()
+DB_DIR = Path(os.getenv("PDB_DB_DIR", str(DATA_DIR / "data")))
+DB_PATH = DB_DIR / os.getenv("PDB_DB_NAME", "pdb_tracker.db")
+RAW_DATA_DIR = Path(os.getenv("PDB_RAW_DIR", str(DATA_DIR / "raw")))
 
 # Journal Impact Factors (2024-2025)
 JOURNAL_IF = {

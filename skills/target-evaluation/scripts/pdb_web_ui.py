@@ -1,16 +1,33 @@
 #!/usr/bin/env python3
-"""PDB Tracker Web UI — generates JS file at startup to avoid Python string escaping."""
+"""PDB Tracker Web UI — generates JS file at startup to avoid Python string escaping.
 
+All paths are configurable via environment variables:
+  PDB_DATA_DIR      - 数据根目录 (默认 ~/.pdb-tracker/)
+  PDB_DB_DIR        - 数据库目录 (默认 $PDB_DATA_DIR/data/)
+  PDB_DB_NAME       - 数据库文件名 (默认 pdb_tracker.db)
+  PDB_WEEKLY_DIR    - 周报目录 (默认 $PDB_DATA_DIR/weekly_reports/)
+  PDB_WEB_SCRIPT_DIR - Web UI 运行时目录 (默认 $PDB_DATA_DIR/web_scripts/)
+  PDB_WEB_PORT      - 端口 (默认 5555)
+"""
+import os
 from pathlib import Path
 from flask import Flask, request, jsonify, Response, send_file
-import re, sqlite3, os, time, json, logging
+import re, sqlite3, time, json, logging
+
+# ─── 配置 (支持环境变量覆盖) ──────────────────────────────────────────────
+def _get_data_dir() -> Path:
+    if os.getenv("PDB_DATA_DIR"):
+        return Path(os.getenv("PDB_DATA_DIR"))
+    return Path.home() / ".pdb-tracker"
+
+DATA_DIR = _get_data_dir()
+DB_DIR = Path(os.getenv("PDB_DB_DIR", str(DATA_DIR / "data")))
+DB_PATH = DB_DIR / os.getenv("PDB_DB_NAME", "pdb_tracker.db")
+REPORTS_DIR = Path(os.getenv("PDB_WEEKLY_DIR", str(DATA_DIR / "weekly_reports")))
+SCRIPT_DIR = Path(os.getenv("PDB_WEB_SCRIPT_DIR", str(DATA_DIR / "web_scripts")))
+SCRIPT_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
-WIKI_PATH = Path("/Users/lijing/Documents/my_note/LLM-Wiki")
-DB_PATH = WIKI_PATH / "data" / "pdb_tracker.db"
-REPORTS_DIR = WIKI_PATH / "wiki" / "pdb_weekly_report"
-SCRIPT_DIR = Path("/tmp/pdb_scripts")
-SCRIPT_DIR.mkdir(exist_ok=True)
 
 # ─── Generate JS file at startup ───────────────────────────────────────────
 def write_js():
