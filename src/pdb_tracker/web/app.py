@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""PDB Tracker Web UI — all paths configurable via environment variables (see config.py)."""
+"""PDB Tracker Web UI — generates JS file at startup to avoid Python string escaping.
 
-import os
+All paths are configurable via environment variables (see pdb_tracker.config).
+"""
+
 from pathlib import Path
 from flask import Flask, request, jsonify, Response, send_file
-import re, sqlite3, time, json, logging, shutil
+import re, sqlite3, os, time, json, logging
 
 from pdb_tracker import config
 
@@ -21,11 +23,11 @@ def paths():
         _cached_paths = {
             "db": config.get_db_path(),
             "weekly_reports": config.get_weekly_reports_dir(),
-            "weekly_summaries": config.get_weekly_summaries_dir(),
             "evaluations": config.get_evaluations_dir(),
             "script_dir": config.get_script_dir(),
         }
     return _cached_paths
+
 
 # ─── Generate JS file at startup ───────────────────────────────────────────
 def write_js():
@@ -44,28 +46,102 @@ def write_js():
     L("function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}")
     L("function fmtMethod(m){if(!m)return '-';if(/electron microscopy|cryo/i.test(m))return 'Cryo-EM';if(/x-ray/i.test(m))return 'X-ray';if(/nmr/i.test(m))return 'NMR';return m;}")
 
-    L("async function init(){try{snapshots=await fetch('/api/snapshots').then(function(r){return r.json();});}catch(e){snapshots=[];}renderWeeks();try{allReports=await fetch('/api/reports/list').then(function(r){return r.json();});}catch(e){allReports=[];}renderReportList(allReports);await loadEntries();}")
+    L("async function init(){try{snapshots=await fetch('/api/snapshots').then(function(r){return r.json();});}catch(e){snapshots=[];}renderWeeks();try{allReports=await fetch('/api/reports/list').then(function(r){return r.json();});}catch(e){allReports=[];}await loadEntries();}")
 
-    L("function renderWeeks(){var list=document.getElementById('week-list');if(!snapshots||!snapshots.length){list.innerHTML='<div class=\"report-empty\">No data</div>';return;}var sel=document.getElementById('sel-week');sel.innerHTML=\"<option value='all'>All Weeks</option>\";list.innerHTML='';snapshots.forEach(function(s){var card=document.createElement('div');card.className='week-card';card.dataset.wid=s.week_id;card.innerHTML=\"<div class='w-id'>\"+s.week_id+\"</div><div class='w-dates'>\"+s.week_start+\" -> \"+s.week_end+\"</div><div class='w-stats'><span class='week-stat wstat-em'>EM:\"+(s.cryoem_count||0)+\"</span><span class='week-stat wstat-xr'>XR:\"+(s.xray_count||0)+\"</span><span class='week-stat wstat-tot'>&sum;:\"+(s.total_structures||0)+\"</span></div>\";card.onclick=(function(wid,c){return function(){onWeekClick(wid,c);};})(s.week_id,card);list.appendChild(card);var opt=document.createElement('option');opt.value=s.week_id;opt.textContent=s.week_id+' ('+s.week_start+')';sel.appendChild(opt);});}")
+    L("function renderWeeks(){var list=document.getElementById('week-list');if(!snapshots||!snapshots.length){list.innerHTML='<div class=\"report-empty\">No data</div>';return;}var sel=document.getElementById('sel-week');sel.innerHTML=\"<option value='all'>All Weeks</option>\";list.innerHTML='';snapshots.forEach(function(s){var card=document.createElement('div');card.className='report-item';card.dataset.wid=s.week_id;card.innerHTML=\"<div class='rname' style='font-size:11px;'><span style='font-family:var(--mono);color:var(--accent);'>\"+s.week_id+\"</span> <span style='font-size:9px;color:var(--muted);'>\"+s.total_structures+\" entries</span></div><div class='rtitle' style='font-size:10px;'>\"+s.week_start+\" -> \"+s.week_end+\"</div><div class='rdate' style='font-size:9px;color:var(--muted);'>EM:\"+(s.cryoem_count||0)+\" | XR:\"+(s.xray_count||0)+\"</div>\";card.onclick=(function(wid,c){return function(){onWeekClick(wid,c);};})(s.week_id,card);list.appendChild(card);var opt=document.createElement('option');opt.value=s.week_id;opt.textContent=s.week_id+' ('+s.week_start+')';sel.appendChild(opt);});}")
 
-    L(r"async function onWeekClick(weekId,card){console.log('onWeekClick called with weekId=',weekId);activeWeek=weekId;activeMethod='all';activeSearch='';document.getElementById('sel-method').value='all';document.getElementById('inp-search').value='';document.querySelectorAll('.week-card').forEach(function(c){c.classList.remove('active');});if(card)card.classList.add('active');document.getElementById('sel-week').value=weekId||'all';await loadEntries();if(weekId===null){renderReportList(allReports);}else{var snap=null;for(var j=0;j<snapshots.length;j++)if(snapshots[j].week_id===weekId){snap=snapshots[j];break;}if(!snap){renderReportList(allReports);}else{var filtered=allReports.filter(function(r){var m=r.name.match(/(\d{4}-\d{2}-\d{2})/);return m&&m[1]>=snap.week_start&&m[1]<=snap.week_end;});renderReportList(filtered);}}}")
+    L(r"async function onWeekClick(weekId,card){console.log('onWeekClick called with weekId=',weekId);activeWeek=weekId;activeMethod='all';activeSearch='';document.getElementById('sel-method').value='all';document.getElementById('inp-search').value='';var list=document.getElementById('week-list');var weekCards=list.querySelectorAll('.report-item');var selectedCard=null;if(weekId===null){weekCards.forEach(function(c){c.style.display='';c.classList.remove('active');});document.getElementById('sel-week').value='all';await loadEntries();var oldReportsDiv=document.getElementById('week-reports');if(oldReportsDiv)oldReportsDiv.remove();document.getElementById('back-button-container').style.display='none';}else{weekCards.forEach(function(c){if(c.dataset.wid===weekId){c.classList.add('active');c.style.display='';selectedCard=c;}else{c.classList.remove('active');c.style.display='none';}});if(selectedCard&&selectedCard!==list.firstChild){list.insertBefore(selectedCard,list.firstChild);}document.getElementById('sel-week').value=weekId;await loadEntries();var snap=null;for(var j=0;j<snapshots.length;j++)if(snapshots[j].week_id===weekId){snap=snapshots[j];break;}var filteredReports=[];if(snap){filteredReports=allReports.filter(function(r){var m=r.name.match(/(\d{4}-\d{2}-\d{2})/);return m&&m[1]>=snap.week_start&&m[1]<=snap.week_end;});}var oldReportsDiv=document.getElementById('week-reports');if(oldReportsDiv)oldReportsDiv.remove();var reportsDiv=document.createElement('div');reportsDiv.id='week-reports';reportsDiv.className='week-reports';reportsDiv.style.cssText='padding:8px 10px;border-top:1px solid var(--border);background:var(--card);margin-top:4px;';if(selectedCard){selectedCard.insertAdjacentElement('afterend',reportsDiv);}renderReportListInDiv(filteredReports,reportsDiv);document.getElementById('back-button-container').style.display='block';}}")
 
     L("async function loadEntries(){var params=[];if(activeWeek!==null)params.push('week='+encodeURIComponent(activeWeek));if(activeMethod!=='all')params.push('method='+encodeURIComponent(activeMethod));if(activeSearch)params.push('q='+encodeURIComponent(activeSearch));params.push('limit=500');var url='/api/entries?'+params.join('&');try{allEntries=await fetch(url).then(function(r){return r.json();});}catch(e){allEntries=[];}var sortedRows=sortEntries(allEntries.slice());for(var si=0;si<sortedRows.length;si++){sortedRows[si]._origIdx=allEntries.indexOf(sortedRows[si]);}renderTable(sortedRows);}")
 
     L("function sortEntries(arr){return arr.slice().sort(function(a,b){var av=a[sortCol],bv=b[sortCol];var an=parseFloat(av),bn=parseFloat(bv);var aNum=(av!=null&&String(av).trim()!==''&&!isNaN(an));var bNum=(bv!=null&&String(bv).trim()!==''&&!isNaN(bn));var cmp;if(aNum&&bNum){cmp=an-bn;}else if(aNum){cmp=-1;}else if(bNum){cmp=1;}else{cmp=String(av||'').localeCompare(String(bv||''));}return sortAsc?cmp:-cmp;});}")
 
-    L("function renderTable(rows){var tbody=document.getElementById('table-body');tbody.removeAttribute('data-eval-table');document.getElementById('entry-count').textContent=rows.length+' entries';if(!rows.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No entries</div></td></tr>\";return;}var html=[];for(var i=0;i<rows.length;i++){var e=rows[i];var origIdx=e._origIdx!=null?e._origIdx:i;var method=e.method||'';var bClass='badge-oth',mLabel=method;if(/electron microscopy|cryo/i.test(method)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(method)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(method)){bClass='badge-nmr';mLabel='NMR';}var res=e.resolution;var rClass='res-mid',rStr='-';if(res!=null&&String(res).trim()!==''&&!isNaN(parseFloat(res))){var rn=parseFloat(res);rClass=rn<=2.0?'res-good':rn>3.5?'res-poor':'res-mid';rStr=String(res);}var ifTier=e.if_tier||'';var tierBadge=ifTier?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifVal=(e.journal_if!=null&&String(e.journal_if).trim()!=='')?\" <span class='if-val'>IF \"+Number(e.journal_if).toFixed(1)+\"</span>\":'';var rawLigs=(e.ligand_info||'').trim();var ligs=rawLigs?rawLigs.split(/;/).map(function(s){return s.trim();}).filter(Boolean):[];var ligHtml='-';if(ligs.length){var chips=[];var maxShow=3;for(var li=0;li<Math.min(ligs.length,maxShow);li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+origIdx+\"'>\"+escHtml(ligs[li])+\"</span>\");}if(ligs.length>maxShow){chips.push(\"<span style='color:var(--muted);font-size:9px;margin-left:4px;'>+\"+(ligs.length-maxShow)+\" more</span>\");}ligHtml=chips.join('');}html.push(\"<tr><td><span class='pdb-link' data-idx='\"+origIdx+\"' data-pdb='\"+escHtml(e.pdb_id)+\"'>\"+escHtml(e.pdb_id)+\"</span></td>\"+\"<td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td>\"+\"<td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td>\"+\"<td>\"+tierBadge+ifVal+\"</td>\"+\"<td class='title-cell' title='\"+escHtml(e.title||'')+\"'>\"+escHtml(e.title||'-')+\"</td>\"+\"<td>\"+(e.release_date||'-')+\"</td>\"+\"<td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}tbody.innerHTML=html.join('');}")
+    L("function renderTable(rows){var tbody=document.getElementById('table-body');tbody.removeAttribute('data-eval-table');document.getElementById('entry-count').textContent=rows.length+' entries';if(!rows.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No entries</div></td></tr>\";return;}var html=[];for(var i=0;i<rows.length;i++){var e=rows[i];var origIdx=e._origIdx!=null?e._origIdx:i;var method=e.method||'';var bClass='badge-oth',mLabel=method;if(/electron microscopy|cryo/i.test(method)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(method)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(method)){bClass='badge-nmr';mLabel='NMR';}var res=e.resolution;var rClass='res-mid',rStr='-';if(res!=null&&String(res).trim()!==''&&!isNaN(parseFloat(res))){var rn=parseFloat(res);rClass=rn<=2.0?'res-good':rn>3.5?'res-poor':'res-mid';rStr=rn.toFixed(2);}var ifTier=e.if_tier||'';var tierBadge=ifTier?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifVal=(e.journal_if!=null&&String(e.journal_if).trim()!=='')?\" <span class='if-val'>IF \"+Number(e.journal_if).toFixed(1)+\"</span>\":'';var ligand=(e.ligand_info||e.ligand||'').trim();var ligs=ligand?(ligand.split(/;/).map(function(l){var trimmed=l.trim();var colonIdx=trimmed.indexOf(':');return colonIdx>0?trimmed.substring(0,colonIdx):trimmed;}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+origIdx+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join('');}html.push(\"<tr><td><span class='pdb-link' data-idx='\"+origIdx+\"' data-pdb='\"+escHtml(e.pdb_id)+\"'>\"+escHtml(e.pdb_id)+\"</span></td>\"+\"<td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td>\"+\"<td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td>\"+\"<td>\"+tierBadge+ifVal+\"</td>\"+\"<td class='title-cell' title='\"+escHtml(e.title||'')+\"'>\"+escHtml(e.title||'-')+\"</td>\"+\"<td>\"+(e.release_date||'-')+\"</td>\"+\"<td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}tbody.innerHTML=html.join('');}")
 
     L("document.getElementById('table-head').onclick=function(e){var th=e.target.closest('th');if(!th||!th.dataset.col)return;var col=th.dataset.col;if(sortCol===col){sortAsc=!sortAsc;}else{sortCol=col;sortAsc=false;}document.querySelectorAll('#table-head th').forEach(function(t){t.dataset.sorted='false';var a=t.querySelector('.sort-arrow');if(a)a.innerHTML='&#8645;';});th.dataset.sorted='true';var sa=th.querySelector('.sort-arrow');if(sa)sa.innerHTML=sortAsc?'&#8593;':'&#8595;';if(currentMode==='eval'){var sorted=sortEvalStructures(currentEvalStructures.slice());currentEvalStructures=sorted;renderEvalTable(sorted);}else{renderTable(sortEntries(allEntries.slice()));}};")
 
     L("var ttPdb=document.getElementById('tt-pdb');")
-    L("document.getElementById('table-body').addEventListener('mouseover',function(e){var pdbSpan=e.target.closest('.pdb-link');if(pdbSpan){var idx=parseInt(pdbSpan.getAttribute('data-idx'),10);var tbody=document.getElementById('table-body');var isEval=tbody&&tbody.getAttribute('data-eval-table')==='true';var entry=isEval?(currentEvalStructures.find(function(s){return s._origIdx===idx;})||{}):(allEntries[idx]||{});if(!entry)return;document.getElementById('tt-pdb-header').textContent=entry.pdb_id;document.getElementById('tt-pdb-method').textContent=fmtMethod(entry.method);document.getElementById('tt-pdb-res').textContent=(entry.resolution!=null)?entry.resolution+' A':'-';document.getElementById('tt-pdb-date').textContent=entry.release_date||'-';document.getElementById('tt-pdb-journal').textContent=entry.journal||'-';document.getElementById('tt-pdb-if').textContent=(entry.journal_if!=null)?Number(entry.journal_if).toFixed(1):'-';var ligs=((entry.ligand_info||entry.ligand||'').trim())?((entry.ligand_info||entry.ligand)||'').replace(/;/g,', '):'-';document.getElementById('tt-pdb-ligs').textContent=ligs;var titleEl=document.getElementById('tt-pdb-title');if(entry.title){titleEl.textContent=entry.title;titleEl.style.display='block';}else{titleEl.style.display='none';}var img=document.getElementById('tt-pdb-img');img.src='https://cdn.rcsb.org/images/structures/'+(entry.pdb_id||'').toLowerCase()+'_assembly-1.jpeg';img.style.display='block';img.onerror=function(){this.style.display='none';};var rect=pdbSpan.getBoundingClientRect();var x=rect.right+14,y=rect.top;if(x+230>window.innerWidth)x=rect.left-244;if(y+360>window.innerHeight)y=window.innerHeight-365;ttPdb.style.left=x+'px';ttPdb.style.top=y+'px';ttPdb.classList.add('show');ttLig.classList.remove('show');return;}var chip=e.target.closest('.lig-chip');if(chip){var ligCode=chip.getAttribute('data-lig');if(!ligCode)return;document.getElementById('tt-lig-header').textContent=ligCode;document.getElementById('tt-lig-name').textContent='Loading...';document.getElementById('tt-lig-name').style.display='block';var img=document.getElementById('tt-lig-img');img.style.display='none';img.onerror=function(){};img.src='https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/'+encodeURIComponent(ligCode)+'/PNG';img.onload=function(){img.style.display='block';};img.onerror=function(){img.src='https://www.rcsb.org/ligand/graphics/'+ligCode+'-full.png';img.onload=function(){img.style.display='block';};img.onerror=function(){img.style.display='none';};};fetch('/api/ligand/'+encodeURIComponent(ligCode)).then(function(r){return r.json();}).then(function(d){document.getElementById('tt-lig-name').textContent=d.name||ligCode;}).catch(function(){document.getElementById('tt-lig-name').textContent=ligCode;});var rect=chip.getBoundingClientRect();var x=rect.right+10,y=rect.top-20;if(x+200>window.innerWidth)x=rect.left-210;if(y+200>window.innerHeight)y=window.innerHeight-205;ttLig.style.left=x+'px';ttLig.style.top=y+'px';ttLig.classList.add('show');ttPdb.classList.remove('show');}});")
+    L("var ttLig=document.getElementById('tt-lig');")
+    L("document.getElementById('table-body').addEventListener('mouseover',function(e){")
+    L("  var pdbSpan=e.target.closest('.pdb-link');")
+    L("  if(pdbSpan){")
+    L("    var idx=parseInt(pdbSpan.getAttribute('data-idx'),10);")
+    L("    var tbody=document.getElementById('table-body');")
+    L("    var isEval=tbody&&tbody.getAttribute('data-eval-table')==='true';")
+    L("    var entry=isEval?(currentEvalStructures.find(function(s){return s._origIdx===idx;})||{}):(allEntries[idx]||{});")
+    L("    if(!entry)return;")
+    L("    document.getElementById('tt-pdb-header').textContent=entry.pdb_id;")
+    L("    document.getElementById('tt-pdb-method').textContent=fmtMethod(entry.method);")
+    L("    document.getElementById('tt-pdb-res').textContent=(entry.resolution!=null)?entry.resolution+' A':'-';")
+    L("    document.getElementById('tt-pdb-date').textContent=entry.release_date||'-';")
+    L("    document.getElementById('tt-pdb-journal').textContent=entry.journal||'-';")
+    L("    document.getElementById('tt-pdb-if').textContent=(entry.journal_if!=null)?Number(entry.journal_if).toFixed(1):'-';")
+    L("    var ligs=((entry.ligand_info||entry.ligand||'').trim())?((entry.ligand_info||entry.ligand)||'').replace(/;/g,', '):'-';")
+    L("    document.getElementById('tt-pdb-ligs').textContent=ligs;")
+    L("    var titleEl=document.getElementById('tt-pdb-title');")
+    L("    if(entry.title){titleEl.textContent=entry.title;titleEl.style.display='block';}else{titleEl.style.display='none';}")
+    L("    var img=document.getElementById('tt-pdb-img');")
+    L("    img.src='https://cdn.rcsb.org/images/structures/'+(entry.pdb_id||'').toLowerCase()+'_assembly-1.jpeg';")
+    L("    img.style.display='block';")
+    L("    img.onerror=function(){this.style.display='none';};")
+    L("    var rect=pdbSpan.getBoundingClientRect();")
+    L("    var x=rect.right+14,y=rect.top;")
+    L("    if(x+230>window.innerWidth)x=rect.left-244;")
+    L("    if(y+360>window.innerHeight)y=window.innerHeight-365;")
+    L("    ttPdb.style.left=x+'px';")
+    L("    ttPdb.style.top=y+'px';")
+    L("    ttPdb.classList.add('show');")
+    L("    ttLig.classList.remove('show');")
+    L("    return;")
+    L("  }")
+    L("  var chip=e.target.closest('.lig-chip');")
+    L("  if(chip){")
+    L("    var ligCode=chip.getAttribute('data-lig');")
+    L("    if(!ligCode)return;")
+    L("    document.getElementById('tt-lig-header').textContent=ligCode;")
+    L("    document.getElementById('tt-lig-info').innerHTML='Loading...';")
+    L("    var img=document.getElementById('tt-lig-img');")
+    L("    img.style.display='none';")
+    L("    img.onerror=function(){};")
+    L("    var firstChar=ligCode.charAt(0);")
+    L("    img.src='https://cdn.rcsb.org/images/ccd/labeled/'+firstChar+'/'+ligCode+'.svg';")
+    L("    img.onload=function(){img.style.display='block';};")
+    L("    img.onerror=function(){")
+    L("      img.src='https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/'+encodeURIComponent(ligCode)+'/PNG';")
+    L("      img.onload=function(){img.style.display='block';};")
+    L("      img.onerror=function(){")
+    L("        img.src='https://www.rcsb.org/ligand/graphics/'+ligCode+'-full.png';")
+    L("        img.onload=function(){img.style.display='block';};")
+    L("        img.onerror=function(){img.style.display='none';};")
+    L("      };")
+    L("    };")
+    L("    fetch('/api/ligand/'+encodeURIComponent(ligCode)).then(function(r){return r.json();}).then(function(d){")
+    L("      var name=d.name||ligCode;")
+    L("      var infoLines=[];")
+    L("      if(d.formula)infoLines.push('<span style=\\'color:var(--muted);\\'>Formula:</span> <span style=\\'color:var(--text);\\'>'+escHtml(d.formula)+'</span>');")
+    L("      if(d.molecular_weight)infoLines.push('<span style=\\'color:var(--muted);\\'>MW:</span> <span style=\\'color:var(--text);\\'>'+Number(d.molecular_weight).toFixed(2)+' Da</span>');")
+    L("      if(d.type)infoLines.push('<span style=\\'color:var(--muted);\\'>Type:</span> <span style=\\'color:var(--text);\\'>'+escHtml(d.type)+'</span>');")
+    L("      if(d.description)infoLines.push('<span style=\\'color:var(--muted);\\'>Desc:</span> <span style=\\'color:var(--text);\\'>'+escHtml(d.description.substring(0,100))+(d.description.length>100?'...':'')+'</span>');")
+    L("      var infoHtml=infoLines.length?infoLines.join('<br>'):'';")
+    L("      document.getElementById('tt-lig-info').innerHTML='<div style=\\'font-size:12px;color:var(--primary);font-weight:600;margin-bottom:6px;border-bottom:1px solid var(--border);padding-bottom:4px;\\'>'+escHtml(name)+'</div>'+(infoHtml?'<div style=\\'font-size:10px;line-height:1.5;\\'>'+infoHtml+'</div>':'');")
+    L("    }).catch(function(){")
+    L("      document.getElementById('tt-lig-info').innerHTML='<div style=\\'font-size:12px;color:var(--primary);font-weight:600;\\'>'+escHtml(ligCode)+'</div><div style=\\'font-size:10px;color:var(--muted);\\'>No additional info</div>';")
+    L("    });")
+    L("    var rect=chip.getBoundingClientRect();")
+    L("    var x=rect.right+10,y=rect.top-20;")
+    L("    if(x+200>window.innerWidth)x=rect.left-210;")
+    L("    if(y+200>window.innerHeight)y=window.innerHeight-205;")
+    L("    ttLig.style.left=x+'px';")
+    L("    ttLig.style.top=y+'px';")
+    L("    ttLig.classList.add('show');")
+    L("    ttPdb.classList.remove('show');")
+    L("  }")
+    L("});")
     L("document.getElementById('table-body').addEventListener('mouseout',function(e){if(e.relatedTarget&&ttPdb.contains(e.relatedTarget))return;if(!e.target.closest('.pdb-link'))return;ttPdb.classList.remove('show');if(e.relatedTarget&&ttLig.contains(e.relatedTarget))return;if(!e.target.closest('.lig-chip'))return;ttLig.classList.remove('show');});")
     L("ttPdb.onmouseenter=function(){ttPdb.classList.add('show');};ttPdb.onmouseleave=function(){ttPdb.classList.remove('show');};")
 
     L("document.getElementById('table-body').onclick=function(e){var ligChip=e.target.closest('.lig-chip');if(ligChip){var ligCode=ligChip.getAttribute('data-lig');if(ligCode)window.open('https://www.rcsb.org/ligand/'+encodeURIComponent(ligCode),'_blank');return;}var pdbSpan=e.target.closest('.pdb-link');if(pdbSpan){var pdbId=pdbSpan.getAttribute('data-pdb');if(pdbId)window.open('https://www.rcsb.org/structure/'+pdbId.toLowerCase(),'_blank');return;}};")
 
-    L("var ttLig=document.getElementById('tt-lig');")
     L("ttLig.onmouseenter=function(){ttLig.classList.add('show');};ttLig.onmouseleave=function(){ttLig.classList.remove('show');};")
 
     L("function switchTab(tab){activeTab=tab;document.querySelectorAll('.preview-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===tab);});document.getElementById('preview-content').style.display='block';if(currentMode==='eval'){if(tab==='summary')showEvalSummary();else if(tab==='report')showEvalFullReport();}else{if(tab==='summary')showSummary(findSnap(activeReport));else if(tab==='report')showFullReport(activeReport);}}")
@@ -82,6 +158,8 @@ def write_js():
 
     L("function renderReportList(files){console.log('renderReportList called with',files?files.length:'null','files, allReports.length='+allReports.length);var list=document.getElementById('report-list');if(!files||!files.length){list.innerHTML=\"<div class='report-empty'>No PDB reports</div>\";return;}list.innerHTML='';files.forEach(function(f){var dm=f.name.match(/(\\d{4}-\\d{2}-\\d{2})/);var item=document.createElement('div');item.className='report-item';item.innerHTML=\"<div class='rname'>\"+escHtml(f.name)+\"</div><div class='rtitle'>\"+(f.title||'')+\"</div><div class='rdate'>\"+(dm?dm[1]:'')+\"</div>\";item.onclick=(function(n,it){return function(){onReportClick(n,it);};})(f.name,item);list.appendChild(item);});}")
 
+    L("function renderReportListInDiv(files,container){console.log('renderReportListInDiv called with',files?files.length:'null','files');if(!container)return;if(!files||!files.length){container.innerHTML=\"<div class='report-empty' style='padding:10px;font-size:11px;'>No reports</div>\";return;}var html=\"<div style='font-size:11px;color:var(--primary);margin-bottom:8px;'>Reports</div><div style='display:flex;flex-direction:column;gap:4px;'>\";files.forEach(function(f){var dm=f.name.match(/(\\d{4}-\\d{2}-\\d{2})/);var dateStr=dm?dm[1]:'';html+=\"<div class='report-item' style='padding:8px 10px;font-size:11px;cursor:pointer;border-radius:6px;background:var(--bg);border:1px solid var(--border);transition:all 0.15s;'><div style='font-size:10px;color:var(--primary);'>\"+escHtml(f.title||f.name)+\"</div><div style='font-size:9px;color:var(--muted);margin-top:2px;'>\"+dateStr+\"</div></div>\";});html+=\"</div>\";container.innerHTML=html;var items=container.querySelectorAll('.report-item');items.forEach(function(item,idx){item.onclick=function(){items.forEach(function(i){i.classList.remove('active');});item.classList.add('active');var modal=document.getElementById('report-modal');if(modal){var title=document.getElementById('modal-title');var body=document.getElementById('modal-body');if(title)title.textContent=files[idx].name;if(body){body.innerHTML=\"<div class='preview-empty'><div class='preview-empty-icon'>&#8987;</div>Loading...</div>\";fetch('/api/report?name='+encodeURIComponent(files[idx].name)).then(function(res){return res.text();}).then(function(md){body.innerHTML=\"<div class='md-content'>\"+renderMD(md)+\"</div>\";}).catch(function(){body.innerHTML=\"<div class='preview-empty'><div class='preview-empty-icon'>&#9888;</div>Failed</div>\";});}modal.classList.add('show');}else{showFullReport(files[idx].name);}};});}")
+
     # FIXED renderMD: use [\s\S] instead of . to match any char including newlines
     L("function renderMD(md){var h=md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');")
     L("h=h.replace(/```([\\s\\S]*?)```/g,'<pre><code>$1</code></pre>');")
@@ -92,31 +170,34 @@ def write_js():
     L("h=h.replace(/^> (.+)$/gm,'<blockquote>$1</blockquote>');")
     L("h=h.replace(/^- (.+)$/gm,'<li>$1</li>');")
     L("h=h.replace(/(<li>[\\s\\S]*?<\\/li>)+/g,'<ul>$&</ul>');")
-    L("h=h.replace(/^\\|.*\\|\\s*$/gm,function(row){var cells=row.split('|').slice(1,-1).map(function(c){return'<td>'+c.trim()+'</td>';}).join('');if(cells.match(/^\\s*[-:]+\\s*$/))return'';return'<tr>'+cells+'</tr>';});")
-    L("h=h.replace(/(<tr>[\\s\\S]*?<\\/tr>\\s*)+/g,'<table border=\"1\" cellpadding=\"4\" style=\"border-collapse:collapse;width:100%;font-size:12px;margin:8px 0;\">$&</table>');")
+    L("h=h.replace(/^\\|.*\\|\\s*$/gm,function(row){var cells=row.split('|').slice(1,-1);var isSeparator=cells.every(function(c){return /^\\s*[-:]+\\s*$/.test(c);});if(isSeparator)return'';var htmlCells=cells.map(function(c){return'<td>'+c.trim()+'</td>';}).join('');return'<tr>'+htmlCells+'</tr>';});")
+    L("h=h.replace(/(<tr>[\\s\\S]*?<\\/tr>\\s*)+/g,'<table class=\\'md-table\\'>$&</table>');")
     L("h=h.replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');")
     L("h=h.replace(/\\*(.+?)\\*/g,'<em>$1</em>');")
     L("h=h.replace(/\\n\\n+/g,'</p><p>');")
     L("return '<p>'+h+'</p>'.replace(/<p>\\s*<\\/p>/g,'');}")
     L('var allEvalReports=[];')
     L('async function loadEvalReports(){try{var data=await fetch("/api/evaluation/reports/list").then(function(r){return r.json();});allEvalReports=data;renderEvalReports();}catch(e){allEvalReports=[];renderEvalReports();}}')
-    L('function renderEvalReports(){if(!activeEvalId)return;var list=document.getElementById("preview-content");var entryReports=allEvalReports.filter(function(r){return r.uniprot_id===activeEvalId;});if(!entryReports.length){list.innerHTML="<div class=\'preview-empty\'><div class=\'preview-empty-icon\'>&#128196;</div>No evaluation report for this entry</div>";return;}var html="<div style=\'padding:14px;\'><h3 style=\'margin:0 0 10px;font-size:12px;color:var(--primary);border-bottom:1px solid var(--border);padding-bottom:6px;\'>评估报告</h3><div style=\'display:flex;flex-direction:column;gap:6px;\'>";entryReports.forEach(function(r){var isActive=activeEvalMdReport===r.uniprot_id;var dateStr=r.created?r.created.substring(0,10):\'\';html+="<div class=\'report-item\'"+(isActive?" active":"")+" data-uid=\'"+r.uniprot_id+"\' onclick=\'onEvalMdReportClick(this)\' style=\'padding:8px 10px;font-size:11px;cursor:pointer;border-radius:6px;background:var(--bg);border:1px solid var(--border);transition:all 0.15s;\'><div style=\'font-family:var(--mono);color:var(--secondary);font-size:10px;font-weight:600;\'>"+escHtml(dateStr)+"</div><div style=\'font-size:10px;color:var(--text);margin-top:3px;\'>"+escHtml(r.title||\'\')+"</div><div style=\'font-size:9px;color:var(--muted);margin-top:2px;\'>"+r.uniprot_id+"</div></div>";});html+="</div></div>";list.innerHTML=html;}')
+    L('function renderEvalReports(){if(!activeEvalId)return;var list=document.getElementById("preview-content");var entryReports=allEvalReports.filter(function(r){return r.uniprot_id===activeEvalId;});if(!entryReports.length){list.innerHTML="<div class=\'preview-empty\'><div class=\'preview-empty-icon\'>&#128196;</div>No evaluation report for this entry</div>";return;}var html="<div style=\'padding:14px;\'><h3 style=\'margin:0 0 10px;font-size:12px;color:var(--primary);border-bottom:1px solid var(--border);padding-bottom:6px;\'>Evaluation Reports</h3><div style=\'display:flex;flex-direction:column;gap:6px;\'>";entryReports.forEach(function(r){var isActive=activeEvalMdReport===r.uniprot_id;var dateStr=r.created?r.created.substring(0,10):\'\';html+="<div class=\'report-item\'"+(isActive?" active":"")+" data-uid=\'"+r.uniprot_id+"\' onclick=\'onEvalMdReportClick(this)\' style=\'padding:8px 10px;font-size:11px;cursor:pointer;border-radius:6px;background:var(--bg);border:1px solid var(--border);transition:all 0.15s;\'><div style=\'font-family:var(--mono);color:var(--secondary);font-size:10px;font-weight:600;\'>"+escHtml(dateStr)+"</div><div style=\'font-size:10px;color:var(--text);margin-top:3px;\'>"+escHtml(r.title||\'\')+"</div><div style=\'font-size:9px;color:var(--muted);margin-top:2px;\'>"+r.uniprot_id+"</div></div>";});html+="</div></div>";list.innerHTML=html;}')
 
-    L("function onEvalMdReportClick(el){var uid=el.getAttribute(\"data-uid\");if(!uid)return;activeEvalMdReport=uid;renderEvalReports();document.getElementById(\"preview-panel\").classList.remove(\"hidden\");document.getElementById(\"preview-title\").textContent=\"评估报告: \"+uid;var c=document.getElementById(\"preview-content\");c.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#8987;</div>Loading...</div>\";fetch(\"/api/evaluation/report?uniprot=\"+encodeURIComponent(uid)).then(function(res){return res.text();}).then(function(md){currentEvalData=md;showEvalFullReport();}).catch(function(){c.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#9888;</div>Failed to load</div>\";});}")
+    L('function renderEvalReportsInDiv(container){if(!activeEvalId||!container)return;var entryReports=allEvalReports.filter(function(r){return r.uniprot_id===activeEvalId;});if(!entryReports.length){container.innerHTML="<div class=\'report-empty\' style=\'padding:10px;font-size:11px;\'>No evaluation reports</div>";return;}var html="<div style=\'font-size:11px;color:var(--primary);margin-bottom:8px;\'>Evaluation Reports</div><div style=\'display:flex;flex-direction:column;gap:6px;\'>";entryReports.forEach(function(r){var dateStr=r.created?r.created.substring(0,10):\'\';html+="<div class=\'report-item\' data-uid=\'"+r.uniprot_id+"\' onclick=\'onEvalMdReportClick(this)\' style=\'padding:8px 10px;font-size:11px;cursor:pointer;border-radius:6px;background:var(--bg);border:1px solid var(--border);transition:all 0.15s;\'><div style=\'font-family:var(--mono);color:var(--secondary);font-size:10px;font-weight:600;\'>"+escHtml(dateStr)+"</div><div style=\'font-size:10px;color:var(--primary);margin-top:3px;\'>"+escHtml(r.title||\'\')+"</div></div>";});html+="</div>";container.innerHTML=html;}')
+
+    L("function onEvalMdReportClick(el){var uid=el.getAttribute('data-uid');if(!uid)return;activeEvalMdReport=uid;var reportsDiv=document.getElementById('eval-reports-under');if(reportsDiv)renderEvalReportsInDiv(reportsDiv);var modal=document.getElementById('report-modal');var body=document.getElementById('modal-body');var title=document.getElementById('modal-title');title.textContent='Eval Report: '+uid;body.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#8987;</div>Loading...</div>\";modal.classList.add('show');fetch('/api/evaluation/report?uniprot='+encodeURIComponent(uid)).then(function(res){return res.text();}).then(function(md){body.innerHTML=\"<div class=\\\"md-content\\\">\"+renderMD(md)+\"</div>\";}).catch(function(){body.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#9888;</div>Failed to load</div>\";});}")
     L('window.onEvalMdReportClick=onEvalMdReportClick;')
 
 
 
-    L("document.getElementById('sel-week').onchange=function(){var wid=this.value;if(wid==='all'){onWeekClick(null,null);}else{var cards=document.querySelectorAll('.week-card');var card=null;for(var i=0;i<cards.length;i++){if(cards[i].dataset.wid===wid){card=cards[i];break;}}onWeekClick(wid,card);}};")
+    L("document.getElementById('sel-week').onchange=function(){var wid=this.value;if(wid==='all'){onWeekClick(null,null);}else{var cards=document.querySelectorAll('#week-list .report-item');var card=null;for(var i=0;i<cards.length;i++){if(cards[i].dataset.wid===wid){card=cards[i];break;}}onWeekClick(wid,card);}};")
     L("document.getElementById('sel-method').onchange=function(){activeMethod=this.value;loadEntries();};")
     L("document.getElementById('btn-search').onclick=function(){activeSearch=document.getElementById('inp-search').value.trim();loadEntries();};")
     L("document.getElementById('inp-search').onkeydown=function(e){if(e.key==='Enter'){activeSearch=this.value.trim();loadEntries();}};")
-    L("document.getElementById('btn-reset').onclick=function(){activeWeek=null;activeMethod='all';activeSearch='';sortCol='release_date';sortAsc=false;document.getElementById('sel-week').value='all';document.getElementById('sel-method').value='all';document.getElementById('inp-search').value='';document.querySelectorAll('.week-card').forEach(function(c){c.classList.remove('active');});document.querySelectorAll('#table-head th').forEach(function(t){t.dataset.sorted='false';t.querySelector('.sort-arrow').innerHTML='&#8645;';});renderReportList([]);allEntries=[];renderTable([]);};")
+    L("document.getElementById('btn-reset').onclick=function(){activeWeek=null;activeMethod='all';activeSearch='';sortCol='release_date';sortAsc=false;document.getElementById('sel-week').value='all';document.getElementById('sel-method').value='all';document.getElementById('inp-search').value='';document.querySelectorAll('#week-list .report-item').forEach(function(c){c.classList.remove('active');});document.querySelectorAll('#table-head th').forEach(function(t){t.dataset.sorted='false';t.querySelector('.sort-arrow').innerHTML='&#8645;';});var oldReportsDiv=document.getElementById('week-reports');if(oldReportsDiv)oldReportsDiv.remove();document.getElementById('back-button-container').style.display='none';renderReportList([]);allEntries=[];renderTable([]);};")
+    L("document.getElementById('btn-back').onclick=function(){activeWeek=null;document.querySelectorAll('#week-list .report-item').forEach(function(c){c.style.display='';c.classList.remove('active');});var oldReportsDiv=document.getElementById('week-reports');if(oldReportsDiv)oldReportsDiv.remove();document.getElementById('back-button-container').style.display='none';document.getElementById('sel-week').value='all';loadEntries();};")
     L("document.getElementById('btn-close').onclick=closePreview;")
     L("document.querySelectorAll('.preview-tab').forEach(function(t){t.onclick=(function(tab){return function(){switchTab(tab);};})(t.getAttribute('data-tab'));});")
 
     L("var currentMode='weekly';var activeEvalId=null;var activeEvalSearch='';var currentEvalStructures=[];var currentEvalData=null;")
-    L("function setMode(mode){currentMode=mode;activeEvalId=null;currentEvalStructures=[];document.getElementById('btn-mode-weekly').classList.toggle('active',mode==='weekly');document.getElementById('btn-mode-eval').classList.toggle('active',mode==='eval');document.getElementById('btn-mode-weekly').style.background=mode==='weekly'?'rgba(6,182,212,0.12)':'var(--card)';document.getElementById('btn-mode-weekly').style.color=mode==='weekly'?'var(--primary)':'var(--muted)';document.getElementById('btn-mode-weekly').style.borderColor=mode==='weekly'?'rgba(6,182,212,0.4)':'var(--border)';document.getElementById('btn-mode-eval').style.background=mode==='eval'?'rgba(139,92,246,0.12)':'var(--card)';document.getElementById('btn-mode-eval').style.color=mode==='eval'?'var(--secondary)':'var(--muted)';document.getElementById('btn-mode-eval').style.borderColor=mode==='eval'?'rgba(139,92,246,0.4)':'var(--border)';document.getElementById('sidebar-weeks-header').style.display=mode==='weekly'?'block':'none';document.getElementById('week-list').style.display=mode==='weekly'?'flex':'none';document.getElementById('sidebar-reports-header').style.display=mode==='weekly'?'block':'none';document.getElementById('report-list').style.display=mode==='weekly'?'flex':'none';document.getElementById('eval-sidebar').style.display=mode==='eval'?'flex':'none';document.getElementById('weekly-toolbar').style.display=mode==='eval'?'none':'flex';document.getElementById('weekly-table').style.display='block';if(mode==='weekly'){document.getElementById('preview-panel').classList.add('hidden');document.getElementById('table-body').removeAttribute('data-eval-table');renderReportList(allReports);renderTable(sortEntries(allEntries.slice()));}else{document.getElementById('preview-panel').classList.remove('hidden');closePreview();renderEvalTable([]);loadEvalList();}}")
+    L("function setMode(mode){currentMode=mode;activeEvalId=null;currentEvalStructures=[];activeEvalMethod='all';activeEvalPdbSearch='';filteredEvalStructures=[];document.getElementById('btn-mode-weekly').classList.toggle('active',mode==='weekly');document.getElementById('btn-mode-eval').classList.toggle('active',mode==='eval');document.getElementById('btn-mode-weekly').style.background=mode==='weekly'?'rgba(6,182,212,0.12)':'var(--card)';document.getElementById('btn-mode-weekly').style.color=mode==='weekly'?'var(--primary)':'var(--muted)';document.getElementById('btn-mode-weekly').style.borderColor=mode==='weekly'?'rgba(6,182,212,0.4)':'var(--border)';document.getElementById('btn-mode-eval').style.background=mode==='eval'?'rgba(139,92,246,0.12)':'var(--card)';document.getElementById('btn-mode-eval').style.color=mode==='eval'?'var(--secondary)':'var(--muted)';document.getElementById('btn-mode-eval').style.borderColor=mode==='eval'?'rgba(139,92,246,0.4)':'var(--border)';document.getElementById('sidebar-weeks-header').style.display=mode==='weekly'?'block':'none';document.getElementById('week-list').style.display=mode==='weekly'?'flex':'none';document.getElementById('eval-sidebar').style.display=mode==='eval'?'flex':'none';document.getElementById('weekly-toolbar').style.display=mode==='eval'?'none':'flex';document.getElementById('eval-toolbar-main').style.display=mode==='eval'?'flex':'none';document.getElementById('weekly-table').style.display='block';var weekReportsDiv=document.getElementById('week-reports');if(weekReportsDiv)weekReportsDiv.style.display='none';var evalReportsDiv=document.getElementById('eval-reports-under');if(evalReportsDiv)evalReportsDiv.style.display='none';document.getElementById('eval-back-container').style.display='none';document.getElementById('back-button-container').style.display='none';var weekRep=document.getElementById('week-reports');if(weekRep)weekRep.remove();if(mode==='weekly'){activeWeek=null;document.getElementById('preview-panel').classList.add('hidden');document.getElementById('table-body').removeAttribute('data-eval-table');document.querySelectorAll('#week-list .report-item').forEach(function(c){c.style.display='';c.classList.remove('active');});document.getElementById('sel-week').value='all';renderTable(sortEntries(allEntries.slice()));}else{document.getElementById('sel-eval-main-method').value='all';document.getElementById('inp-eval-search').value='';document.getElementById('preview-panel').classList.add('hidden');closePreview();renderEvalTable([]);loadEvalList();}}")
 
     L("function renderEvalMD(md){var h=md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');")
     L("h=h.replace(/```([\\s\\S]*?)```/g,'<pre><code>$1</code></pre>');")
@@ -127,8 +208,8 @@ def write_js():
     L("h=h.replace(/^> (.+)$/gm,'<blockquote>$1</blockquote>');")
     L("h=h.replace(/^- (.+)$/gm,'<li>$1</li>');")
     L("h=h.replace(/(<li>[\\s\\S]*?<\\/li>)+/g,'<ul>$&</ul>');")
-    L("h=h.replace(/^\\|.*\\|\\s*$/gm,function(row){var cells=row.split('|').slice(1,-1).map(function(c){return'<td>'+c.trim()+'</td>';}).join('');if(cells.match(/^\\s*[-:]+\\s*$/))return'';return'<tr>'+cells+'</tr>';});")
-    L("h=h.replace(/(<tr>[\\s\\S]*?<\\/tr>\\s*)+/g,'<table border=\"1\" cellpadding=\"4\" style=\"border-collapse:collapse;width:100%;font-size:12px;margin:8px 0;\">$&</table>');")
+    L("h=h.replace(/^\\|.*\\|\\s*$/gm,function(row){var cells=row.split('|').slice(1,-1);var isSeparator=cells.every(function(c){return /^\\s*[-:]+\\s*$/.test(c);});if(isSeparator)return'';var htmlCells=cells.map(function(c){return'<td>'+c.trim()+'</td>';}).join('');return'<tr>'+htmlCells+'</tr>';});")
+    L("h=h.replace(/(<tr>[\\s\\S]*?<\\/tr>\\s*)+/g,'<table class=\\'md-table\\'>$&</table>');")
     L("h=h.replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');")
     L("h=h.replace(/\\*(.+?)\\*\\*/g,'<em>$1</em>');")
     L("h=h.replace(/\\n\\n+/g,'</p><p>');")
@@ -138,38 +219,42 @@ def write_js():
 
     L("function renderEvalList(evals){var list=document.getElementById('eval-list');if(!evals||!evals.length){list.innerHTML=\"<div class='report-empty' style='font-size:11px;'>\"+(activeEvalSearch?'无匹配结果':'暂无评估记录')+\"</div>\";return;}list.innerHTML='';evals.forEach(function(e){var item=document.createElement('div');item.className='report-item'+(activeEvalId===e.uniprot_id?' active':'');item.dataset.uid=e.uniprot_id;var scores=e.scores||{};var bestScore=0;for(var m in scores)if(scores[m].score>bestScore)bestScore=scores[m].score;var scoreColor=bestScore>=7?'var(--success)':bestScore>=5?'var(--accent)':'var(--danger)';item.innerHTML=\"<div class='rname' style='font-size:11px;'><span style='font-family:var(--mono);color:var(--accent);'>\"+e.uniprot_id+\"</span> <span style='font-size:9px;color:\"+scoreColor+\";'>\"+bestScore+\"</span></div><div class='rtitle' style='font-size:10px;'>\"+escHtml(e.protein_name||'')+\"</div><div class='rdate' style='font-size:9px;color:var(--muted);'>\"+e.gene_name+\"</div>\";item.onclick=(function(uid){return function(){onEvalClick(uid);};})(e.uniprot_id);list.appendChild(item);});}")
 
-    L("async function onEvalClick(uniprotId){activeEvalId=uniprotId;document.querySelectorAll('#eval-list .report-item').forEach(function(i){i.classList.toggle('active',i.dataset.uid===uniprotId);});document.getElementById('preview-panel').classList.add('hidden');try{var data=await fetch('/api/evaluations/'+encodeURIComponent(uniprotId)).then(function(r){return r.json();});if(data.error){currentEvalData=null;currentEvalStructures=[];renderEvalTable([]);return;}currentEvalData=data;var rawStructures=data.pdb_structures||[];currentEvalStructures=rawStructures.map(function(s,i){s._origIdx=i;return s;});renderEvalTable(currentEvalStructures);showEvalPreview(data);activeEvalMdReport=null;await loadEvalReports();renderEvalReports();}catch(e){currentEvalData=null;currentEvalStructures=[];renderEvalTable([]);}}")
+    L("document.getElementById('btn-modal-close').onclick=function(){document.getElementById('report-modal').classList.remove('show');};")
+    L("document.getElementById('report-modal').onclick=function(e){if(e.target===this)document.getElementById('report-modal').classList.remove('show');};")
+
+    L("async function onEvalClick(uniprotId){activeEvalId=uniprotId;activeEvalMethod='all';activeEvalPdbSearch='';document.getElementById('sel-eval-main-method').value='all';document.getElementById('inp-eval-search').value='';var list=document.getElementById('eval-list');var items=list.querySelectorAll('.report-item');var selectedItem=null;items.forEach(function(i){if(i.dataset.uid===uniprotId){i.classList.add('active');i.style.display='';selectedItem=i;}else{i.classList.remove('active');i.style.display='none';}});if(selectedItem&&selectedItem!==list.firstChild){list.insertBefore(selectedItem,list.firstChild);}document.getElementById('eval-back-container').style.display='block';try{var data=await fetch('/api/evaluations/'+encodeURIComponent(uniprotId)).then(function(r){return r.json();});if(data.error){currentEvalData=null;currentEvalStructures=[];filteredEvalStructures=[];renderEvalTable([]);return;}currentEvalData=data;var rawStructures=data.pdb_structures||[];currentEvalStructures=rawStructures.map(function(s,i){s._origIdx=i;return s;});filteredEvalStructures=currentEvalStructures.slice();renderEvalTable(filteredEvalStructures);activeEvalMdReport=null;await loadEvalReports();var reportsDiv=document.getElementById('eval-reports-under');if(!reportsDiv){reportsDiv=document.createElement('div');reportsDiv.id='eval-reports-under';reportsDiv.className='eval-reports-under';reportsDiv.style.cssText='padding:8px 10px;border-top:1px solid var(--border);background:var(--card);margin-top:4px;';}if(selectedItem){selectedItem.insertAdjacentElement('afterend',reportsDiv);}renderEvalReportsInDiv(reportsDiv);if(reportsDiv)reportsDiv.style.display='block';}catch(e){currentEvalData=null;currentEvalStructures=[];filteredEvalStructures=[];renderEvalTable([]);}}")
 
     
     
     
-    L("function renderEvalTable(structures){var tbody=document.getElementById('table-body');tbody.setAttribute('data-eval-table','true');document.getElementById('entry-count').textContent=structures.length+' PDB structures';if(!structures.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No PDB structures</div></td></tr>\";return;}var html=[];for(var i=0;i<structures.length;i++){var s=structures[i];var pdbId=typeof s==='string'?s:(s.pdb_id||'');var method=typeof s==='string'?'':(s.method||'');var res=typeof s==='string'?null:s.resolution;var title=typeof s==='string'?'':(s.title||'');var releaseDate=typeof s==='string'?'':(s.release_date||'');var ligand=typeof s==='string'?'':(s.ligand||s.ligands||'');var journalIf=typeof s==='string'?null:(s.journal_if||s.if||null);var journal=typeof s==='string'?'':(s.journal||'');var bClass='badge-oth',mLabel=method;if(/electron microscopy|cryo/i.test(method)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(method)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(method)){bClass='badge-nmr';mLabel='NMR';}var rClass='res-mid',rStr='-';if(res!=null&&!isNaN(res)){rClass=res<=2.0?'res-good':res>3.5?'res-poor':'res-mid';rStr=Number(res).toFixed(2);}var ifBadge='';if(journalIf!=null){var tier='low';if(journalIf>=20)tier='top';else if(journalIf>=10)tier='high';else if(journalIf>=5)tier='mid';ifBadge=\"<span class='if-badge tier-\"+tier+\"'>IF \"+Number(journalIf).toFixed(1)+\"</span>\";}var ligs=ligand?(ligand.split(/;/).map(function(l){return l.trim();}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+(s._origIdx!=null?s._origIdx:i)+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join('');}var titleShort=title.substring(0,80);html.push(\"<tr><td><span class='pdb-link' data-idx='\"+(s._origIdx!=null?s._origIdx:i)+\"' data-pdb='\"+escHtml(pdbId)+\"' style='font-family:var(--mono);font-weight:700;color:var(--primary);cursor:pointer;font-size:12px;'>\"+escHtml(pdbId)+\"</span></td><td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td><td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td><td>\"+ifBadge+\"</td><td class='title-cell' title='\"+escHtml(title)+\"'>\"+escHtml(titleShort||'-')+\"</td><td>\"+(releaseDate||'-')+\"</td><td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}tbody.innerHTML=html.join('');}")
+    L("function renderEvalTable(structures){var tbody=document.getElementById('table-body');tbody.setAttribute('data-eval-table','true');document.getElementById('eval-entry-count').textContent=structures.length+' PDB structures';if(!structures.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No PDB structures</div></td></tr>\";return;}var html=[];for(var i=0;i<structures.length;i++){var s=structures[i];var pdbId=typeof s==='string'?s:(s.pdb_id||'');var method=typeof s==='string'?'':(s.method||'');var res=typeof s==='string'?null:s.resolution;var title=typeof s==='string'?'':(s.title||'');var releaseDate=typeof s==='string'?'':(s.release_date||'');var ligand=typeof s==='string'?'':(s.ligand||s.ligands||'');var journalIf=typeof s==='string'?null:(s.journal_if||s.if||null);var ifTier=typeof s==='string'?'':(s.if_tier||'');var journal=typeof s==='string'?'':(s.journal||'');var bClass='badge-oth',mLabel=method;if(/electron microscopy|cryo/i.test(method)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(method)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(method)){bClass='badge-nmr';mLabel='NMR';}var rClass='res-mid',rStr='-';if(res!=null&&!isNaN(res)){rClass=res<=2.0?'res-good':res>3.5?'res-poor':'res-mid';rStr=Number(res).toFixed(2);}var tierBadge=ifTier?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifVal=(journalIf!=null&&String(journalIf).trim()!=='')?\" <span class='if-val'>IF \"+Number(journalIf).toFixed(1)+\"</span>\":'';var ligs=ligand?(ligand.split(/;/).map(function(l){var trimmed=l.trim();var colonIdx=trimmed.indexOf(':');return colonIdx>0?trimmed.substring(0,colonIdx):trimmed;}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+(s._origIdx!=null?s._origIdx:i)+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join('');}var titleShort=title.substring(0,80);html.push(\"<tr><td><span class='pdb-link' data-idx='\"+(s._origIdx!=null?s._origIdx:i)+\"' data-pdb='\"+escHtml(pdbId)+\"' style='font-family:var(--mono);font-weight:700;color:var(--primary);cursor:pointer;font-size:12px;'>\"+escHtml(pdbId)+\"</span></td><td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td><td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td><td>\"+tierBadge+ifVal+\"</td><td class='title-cell' title='\"+escHtml(title)+\"'>\"+escHtml(titleShort||'-')+\"</td><td>\"+(releaseDate||'-')+\"</td><td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}tbody.innerHTML=html.join('');}")
 
 
 
     L("function showEvalPreview(data){currentEvalData=data;document.getElementById('preview-panel').classList.remove('hidden');document.getElementById('preview-title').textContent=data?data.uniprot_id:'—';showEvalSummary();switchTab('summary');}")
-    L("function showEvalSummary(){var data=currentEvalData;var c=document.getElementById('preview-content');if(!data){c.innerHTML=\"<div class='preview-empty'><div class='preview-empty-icon'>&#9888;</div>Failed to load</div>\";return;}var covColor=data.coverage>=50?'var(--success)':'var(--accent)';var uniprot=data.uniprot||{};var scores=data.scores||{};var scoresHtml='';for(var method in scores){var info=scores[method];var pct=info.score*10;var color=info.score>=7?'var(--success)':info.score>=5?'var(--accent)':'var(--danger)';scoresHtml+='<div style=\"margin-bottom:8px;\"><div style=\"display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;\"><span>'+method+'</span><span style=\"color:'+color+';font-weight:700;\">'+info.score+'/10 '+info.assessment+'</span></div><div style=\"height:3px;background:var(--card);border-radius:2px;\"><div style=\"height:3px;width:'+pct+'%;background:'+color+';border-radius:2px;\"></div></div></div>';}c.innerHTML=\"<div class='report-meta'>\"+'<div class=\"mr\"><span class=\"ml\">UniProt</span><span class=\"mv\"><a href=\"https://www.uniprot.org/uniprot/'+data.uniprot_id+'\" target=\"_blank\" style=\"color:var(--primary);\">'+data.uniprot_id+'</a></span></div>'+'<div class=\"mr\"><span class=\"ml\">蛋白名称</span><span class=\"mv\">'+escHtml(uniprot.protein_name||'N/A')+'</span></div>'+'<div class=\"mr\"><span class=\"ml\">基因名</span><span class=\"mv\">'+escHtml((uniprot.gene_names||[]).join(', '))+'</span></div>'+'<div class=\"mr\"><span class=\"ml\">物种</span><span class=\"mv\">'+escHtml(uniprot.organism||'N/A')+'</span></div>'+'<div class=\"mr\"><span class=\"ml\">序列长度</span><span class=\"mv\">'+(uniprot.sequence_length||0)+' aa</span></div>'+'<div class=\"mr\"><span class=\"ml\">覆盖度</span><span class=\"mv\" style=\"color:'+covColor+';font-weight:700;\">'+(data.coverage||0)+'%</span></div>'+'<div class=\"mr\"><span class=\"ml\">PDB结构</span><span class=\"mv\">'+(data.pdb_structures||[]).length+' 个</span></div>'+'</div>'+'<h3 style=\"margin:10px 0 6px;font-size:12px;color:var(--primary);\">可行性评分</h3><div style=\"padding:6px;background:var(--card);border-radius:6px;margin-bottom:8px;\">'+scoresHtml+'</div>';}")
+    L("function showEvalSummary(){var data=currentEvalData;var c=document.getElementById('preview-content');if(!data){c.innerHTML=\"<div class='preview-empty'><div class='preview-empty-icon'>&#9888;</div>Failed to load</div>\";return;}var covColor=data.coverage>=50?'var(--success)':'var(--accent)';var uniprot=data.uniprot||{};var scores=data.scores||{};var scoresHtml='';for(var method in scores){var info=scores[method];var pct=info.score*10;var color=info.score>=7?'var(--success)':info.score>=5?'var(--accent)':'var(--danger)';scoresHtml+='<div style=\"margin-bottom:8px;\"><div style=\"display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;\"><span>'+method+'</span><span style=\"color:'+color+';font-weight:700;\">'+info.score+'/10 '+info.assessment+'</span></div><div style=\"height:3px;background:var(--card);border-radius:2px;\"><div style=\"height:3px;width:'+pct+'%;background:'+color+';border-radius:2px;\"></div></div></div>';}c.innerHTML=\"<div class='report-meta'>\"+'<div class=\"mr\"><span class=\"ml\">UniProt</span><span class=\"mv\"><a href=\"https://www.uniprot.org/uniprot/'+data.uniprot_id+'\" target=\"_blank\" style=\"color:var(--primary);\">'+data.uniprot_id+'</a></span></div>'+'<div class=\"mr\"><span class=\"ml\">Protein Name</span><span class=\"mv\">'+escHtml(uniprot.protein_name||'N/A')+'</span></div>'+'<div class=\"mr\"><span class=\"ml\">Gene Name</span><span class=\"mv\">'+escHtml((uniprot.gene_names||[]).join(', '))+'</span></div>'+'<div class=\"mr\"><span class=\"ml\">Organism</span><span class=\"mv\">'+escHtml(uniprot.organism||'N/A')+'</span></div>'+'<div class=\"mr\"><span class=\"ml\">Sequence Length</span><span class=\"mv\">'+(uniprot.sequence_length||0)+' aa</span></div>'+'<div class=\"mr\"><span class=\"ml\">Coverage</span><span class=\"mv\" style=\"color:'+covColor+';font-weight:700;\">'+(data.coverage||0)+'%</span></div>'+'<div class=\"mr\"><span class=\"ml\">PDB Structures</span><span class=\"mv\">'+(data.pdb_structures||[]).length+'</span></div>'+'</div>'+'<h3 style=\"margin:10px 0 6px;font-size:12px;color:var(--primary);\">Feasibility Score</h3><div style=\"padding:6px;background:var(--card);border-radius:6px;margin-bottom:8px;\">'+scoresHtml+'</div>';}")
     L("function showEvalFullReport(){var data=currentEvalData;var c=document.getElementById('preview-content');if(!data){c.innerHTML=\"<div class='preview-empty'><div class='preview-empty-icon'>&#9888;</div>No data</div>\";return;}var reportContent=(typeof data==='string')?data:(data.report||'');if(!reportContent){c.innerHTML=\"<div class='preview-empty'><div class='preview-empty-icon'>&#9888;</div>No full report available</div>\";return;}c.innerHTML=\"<div class='md-content'>\"+renderEvalMD(reportContent)+'</div>';}")
 
     L("var evalSearchTimer=null;document.getElementById('eval-search').addEventListener('input',function(e){clearTimeout(evalSearchTimer);evalSearchTimer=setTimeout(function(){activeEvalSearch=e.target.value.trim();loadEvalList();},300);});document.getElementById('eval-search').addEventListener('keydown',function(e){if(e.key==='Enter'){clearTimeout(evalSearchTimer);activeEvalSearch=e.target.value.trim();loadEvalList();loadEvalReports();}});")
     L("function sortEvalStructures(arr){var copy=arr.slice();for(var si=0;si<copy.length;si++){if(copy[si]._origIdx==null)copy[si]._origIdx=si;}return copy.sort(function(a,b){var col=sortCol;var av=a[col],bv=b[col];var an=parseFloat(av),bn=parseFloat(bv);var aNum=(av!=null&&String(av).trim()!==''&&!isNaN(an));var bNum=(bv!=null&&String(bv).trim()!==''&&!isNaN(bn));var cmp;if(aNum&&bNum){cmp=an-bn;}else if(aNum){cmp=-1;}else if(bNum){cmp=1;}else{cmp=String(av||'').localeCompare(String(bv||''));}return sortAsc?cmp:-cmp;});}")
     L("document.getElementById('btn-mode-weekly').onclick=function(){setMode('weekly');};")
     L("document.getElementById('btn-mode-eval').onclick=function(){setMode('eval');};")
+    L("document.getElementById('btn-eval-back').onclick=function(){activeEvalId=null;document.querySelectorAll('#eval-list .report-item').forEach(function(i){i.style.display='';i.classList.remove('active');});document.getElementById('eval-back-container').style.display='none';var reportsDiv=document.getElementById('eval-reports-under');if(reportsDiv){reportsDiv.remove();}renderEvalTable([]);};")
+    L("var activeEvalMethod='all';var activeEvalPdbSearch='';var filteredEvalStructures=[];")
+    L("function filterEvalStructures(){if(!currentEvalStructures)return [];var filtered=currentEvalStructures.slice();if(activeEvalMethod!=='all'){filtered=filtered.filter(function(s){var m=(s.method||'').toLowerCase();if(activeEvalMethod==='cryoem')return /electron microscopy|cryo/i.test(m);if(activeEvalMethod==='xray')return /x-ray|xray/i.test(m);if(activeEvalMethod==='nmr')return /nmr/i.test(m);return true;});}if(activeEvalPdbSearch){var q=activeEvalPdbSearch.toLowerCase();filtered=filtered.filter(function(s){var pdbId=(s.pdb_id||'').toLowerCase();var title=(s.title||'').toLowerCase();return pdbId.indexOf(q)>=0||title.indexOf(q)>=0;});}return filtered;}")
+    L("function applyEvalFilters(){filteredEvalStructures=filterEvalStructures();renderEvalTable(filteredEvalStructures);}")
+    L("document.getElementById('sel-eval-main-method').onchange=function(){activeEvalMethod=this.value;applyEvalFilters();};")
+    L("document.getElementById('btn-eval-main-search').onclick=function(){activeEvalPdbSearch=document.getElementById('inp-eval-search').value.trim();applyEvalFilters();};")
+    L("document.getElementById('inp-eval-search').onkeydown=function(e){if(e.key==='Enter'){activeEvalPdbSearch=this.value.trim();applyEvalFilters();}};")
+    L("document.getElementById('btn-eval-main-reset').onclick=function(){activeEvalMethod='all';activeEvalPdbSearch='';document.getElementById('sel-eval-main-method').value='all';document.getElementById('inp-eval-search').value='';applyEvalFilters();};")
+    L("document.getElementById('btn-modal-close').onclick=function(){document.getElementById('report-modal').classList.remove('show');};")
+    L("document.getElementById('report-modal').onclick=function(e){if(e.target===this)document.getElementById('report-modal').classList.remove('show');};")
     L("init().then(function(){setMode('weekly');});")
-    
-    # Bottom drawer controls
-    L("var drawerOpen=false;")
-    L("function toggleDrawer(){var d=document.getElementById('bottom-drawer');var t=document.getElementById('drawer-toggle');if(!d)return;drawerOpen=!drawerOpen;if(drawerOpen){d.classList.add('open');t.innerHTML='&#10005;';renderDrawerContent();}else{d.classList.remove('open');t.innerHTML='&#128196;';}}")
-    L("function closeDrawer(){var d=document.getElementById('bottom-drawer');var t=document.getElementById('drawer-toggle');if(!d)return;drawerOpen=false;d.classList.remove('open');t.innerHTML='&#128196;';}")
-    L("function renderDrawerContent(){var list=document.getElementById('bottom-drawer-list');var title=document.getElementById('bottom-drawer-title');if(!list)return;if(currentMode==='eval'){title.textContent='Evaluations';if(!allEvalReports||!allEvalReports.length){list.innerHTML=\"<div class='drawer-empty'>No evaluation reports</div>\";return;}list.innerHTML='';allEvalReports.slice(0,50).forEach(function(r){var item=document.createElement('div');item.className='drawer-item';item.dataset.uid=r.uniprot_id;item.innerHTML=\"<div class='d-name'>\"+escHtml(r.uniprot_id)+\"</div><div class='d-title'>\"+escHtml(r.title||'')+\"</div><div class='d-date'>\"+(r.created?r.created.substring(0,10):'')+\"</div>\";item.onclick=function(){closeDrawer();if(typeof onEvalMdReportClick==='function'){var fakeEl={getAttribute:function(){return r.uniprot_id;}};onEvalMdReportClick(fakeEl);}};list.appendChild(item);});}else{title.textContent='Weekly Reports';if(!allReports||!allReports.length){list.innerHTML=\"<div class='drawer-empty'>No weekly reports</div>\";return;}list.innerHTML='';allReports.slice(0,50).forEach(function(r){var item=document.createElement('div');item.className='drawer-item';item.dataset.name=r.name;item.innerHTML=\"<div class='d-name'>\"+escHtml(r.name)+\"</div><div class='d-title'>\"+escHtml(r.title||'')+\"</div><div class='d-date'>\"+(r.created?r.created.substring(0,10):'')+\"</div>\";item.onclick=function(){closeDrawer();onReportClick(r.name,item);};list.appendChild(item);});}}")
-    L("function initDrawer(){var toggle=document.getElementById('drawer-toggle');var closeBtn=document.getElementById('bottom-drawer-close');if(toggle){toggle.classList.add('visible');toggle.onclick=toggleDrawer;}if(closeBtn){closeBtn.onclick=closeDrawer;}document.addEventListener('keydown',function(e){if(e.key==='Escape'&&drawerOpen)closeDrawer();});}")
-    L("initDrawer();")
-    
     L("})();")
 
     from pathlib import Path
-    script_dir = paths()["script_dir"]
-    with open(script_dir / "pdb_app.js", 'w', encoding='utf-8') as f:
+    paths()
+    with open(paths()['script_dir'] / "pdb_app.js", 'w', encoding='utf-8') as f:
         f.writelines(lines)
 
 
@@ -209,30 +294,24 @@ def init_weekly_reports_db():
 
 def _migrate_weekly_reports():
     """Import weekly .md files from summaries/ into weekly_reports DB table.
-    Idempotent: skips if weekly_reports table already has rows with content."""
+    Incremental: only imports new files not already in DB."""
     try:
-        reports_dir = paths()["weekly_summaries"]
-        if not reports_dir.exists():
+        if not paths()['weekly_reports'].exists():
             logging.info("[_migrate_weekly_reports] summaries dir does not exist, skipping")
             return
         conn = get_eval_db()
-        # Skip migration if already populated
-        count = conn.execute("SELECT COUNT(*) FROM weekly_reports WHERE content IS NOT NULL AND content != ''").fetchone()[0]
-        if count > 0:
-            conn.close()
-            logging.info(f"[_migrate_weekly_reports] {count} reports already in DB, skipping migration")
-            return
         migrated = 0
-        for f in sorted(reports_dir.glob("*.md")):
+        for f in sorted(paths()['weekly_reports'].glob("*.md")):
             try:
-                content = f.read_text(encoding='utf-8', errors='ignore')
                 # Check if already in DB by filename
                 existing = conn.execute(
                     "SELECT id FROM weekly_reports WHERE filename = ?", (f.name,)
                 ).fetchone()
                 if existing:
                     continue
-                # Extract week from filename: "X射线晶体学结构周报-2026-04-15.md"
+                # Import new file
+                content = f.read_text(encoding='utf-8', errors='ignore')
+                # Extract week from filename: "X射线晶体学结构周报-W16-2026-04-15.md" or "X射线晶体学结构周报-2026-04-15.md"
                 week_match = re.search(r'(\d{4}-\d{2}-\d{2})', f.name)
                 week_id = week_match.group(1) if week_match else f.stem
                 # Determine report_type from filename
@@ -251,11 +330,13 @@ def _migrate_weekly_reports():
                     VALUES (?, ?, ?, ?, ?)
                 """, (week_id, title, f.name, rtype, content))
                 migrated += 1
+                logging.info(f"[_migrate_weekly_reports] imported: {f.name} -> week_id={week_id}")
             except Exception as ex:
                 logging.info(f"[_migrate_weekly_reports] skip {f.name}: {ex}")
         conn.commit()
         conn.close()
-        logging.info(f"[_migrate_weekly_reports] migrated {migrated} weekly reports")
+        if migrated > 0:
+            logging.info(f"[_migrate_weekly_reports] migrated {migrated} new weekly reports")
     except Exception as e:
         logging.error(f"[_migrate_weekly_reports] error: {e}")
 
@@ -270,7 +351,7 @@ def _migrate_evaluation_reports():
             logging.info(f"[_migrate_evaluation_reports] {count} reports already in DB, skipping migration")
             return
         migrated = 0
-        eval_dir = paths()["evaluations"]
+        eval_dir = EVAL_DATA_DIR
         if not eval_dir.exists():
             logging.info("[_migrate_evaluation_reports] evaluations dir does not exist, skipping")
             conn.close()
@@ -308,14 +389,14 @@ def _migrate_evaluation_reports():
 
 # ─── Flask routes ───────────────────────────────────────────────────────────
 def get_db():
-    conn = sqlite3.connect(str(paths()["db"]))
+    conn = sqlite3.connect(str(paths()['db']))
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def get_eval_db():
     """Get a connection to the evaluation database."""
-    conn = sqlite3.connect(str(paths()["db"]))
+    conn = sqlite3.connect(str(paths()['db']))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -380,8 +461,7 @@ def init_eval_db():
             logging.info('[init_eval_db] DB empty -- migrating from JSON files...')
             import json as _json
             migrated = 0
-            eval_dir = paths()["evaluations"]
-            for f in sorted(eval_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
+            for f in sorted(EVAL_DATA_DIR.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
                 try:
                     with open(f, encoding='utf-8') as fp:
                         data = _json.load(fp)
@@ -496,20 +576,82 @@ def api_report():
 @app.route("/api/ligand/<code>")
 def api_ligand(code):
     import urllib.request, json
+    code = code.upper()
+    result = {
+        "code": code,
+        "name": code,
+        "molecular_weight": None,
+        "type": None,
+        "formula": None,
+        "description": None
+    }
+
+    # Try to get ligand info from PDB data first (local database)
     try:
-        url = f"https://data.rcsb.org/rest/v1/core/cheminstance/descriptor/{code.upper()}"
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ligand_info, ligand_names FROM pdb_structures
+            WHERE ligand_info LIKE ? OR ligand_info LIKE ?
+            LIMIT 1
+        """, (f"%{code}%", f"%{code}%"))
+        row = cursor.fetchone()
+        if row and row[0]:
+            # Parse ligand_info to find matching ligand name
+            ligand_info = row[0]
+            # Format: "CODE:Name|CODE2:Name2"
+            for part in ligand_info.split('|'):
+                if ':' in part:
+                    parts = part.split(':', 1)
+                    if parts[0].strip().upper() == code:
+                        result["name"] = parts[1].strip()
+                        break
+    except Exception:
+        pass
+
+    # Fetch additional data from RCSB API
+    try:
+        # Get chemical component info
+        url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{code}"
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read())
-            name = data.get("rcsb_chem_instance_descriptor", {}).get("name", code)
-            return jsonify({"code": code, "name": name})
+            chem_comp = data.get("chem_comp", {})
+
+            # Get name
+            if not result["name"] or result["name"] == code:
+                result["name"] = chem_comp.get("name", code)
+
+            # Get formula
+            result["formula"] = chem_comp.get("formula", None)
+
+            # Get type
+            result["type"] = chem_comp.get("type", None)
+
+            # Get molecular weight
+            result["molecular_weight"] = chem_comp.get("formula_weight", None)
+
     except Exception:
-        return jsonify({"code": code, "name": code})
+        pass
+
+    # Try alternative API endpoint for description
+    try:
+        url = f"https://data.rcsb.org/rest/v1/core/cheminfo/{code}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+            chem_info = data.get("rcsb_chem_info", {})
+            if not result["description"]:
+                result["description"] = chem_info.get("description", None)
+    except Exception:
+        pass
+
+    return jsonify(result)
 
 @app.route("/pdb_app.js")
 def serve_js():
     import time, os
-    js_path = paths()["script_dir"] / "pdb_app.js"
+    js_path = paths()['script_dir'] / "pdb_app.js"
     ts = int(js_path.stat().st_mtime)
     resp = send_file(js_path, mimetype="application/javascript")
     resp.headers["Cache-Control"] = "no-cache, must-revalidate"
@@ -518,7 +660,7 @@ def serve_js():
 @app.route("/")
 def index():
     import time
-    html_path = paths()["script_dir"] / "pdb_index.html"
+    html_path = paths()['script_dir'] / "pdb_index.html"
     ts = int(html_path.stat().st_mtime)
     with open(html_path, encoding='utf-8') as f:
         html = f.read()
@@ -526,7 +668,7 @@ def index():
     return Response(html, mimetype='text/html; charset=utf-8')
 
 # ─── Target Evaluation Storage ───────────────────────────────────────────────
-# EVAL_DATA_DIR is now resolved via config.get_evaluations_dir()
+EVAL_DATA_DIR = paths()['evaluations']
 
 # Journal Impact Factor lookup (sourced from existing data)
 JOURNAL_IF_MAP = {
@@ -597,11 +739,11 @@ def get_journal_if(journal_name: str) -> float:
     return None
 
 
-paths()["evaluations"].mkdir(parents=True, exist_ok=True)
+EVAL_DATA_DIR.mkdir(exist_ok=True)
 
 def _eval_file(uniprot_id: str) -> Path:
     """JSON file path for an evaluation."""
-    return paths()["evaluations"] / f"{uniprot_id}.json"
+    return EVAL_DATA_DIR / f"{uniprot_id}.json"
 
 def save_evaluation(result: dict) -> bool:
     """Save evaluation result to SQLite DB (primary) and JSON file (backup)."""
@@ -736,8 +878,10 @@ def load_evaluation(uniprot_id: str) -> dict:
                     'deposition_date': pd['deposition_date'] or '',
                     'release_date': pd['release_date'] or '',
                     'ligand': pd['ligand'] or '',
+                    'ligand_names': pd.get('ligand_names') or '',
                     'journal': pd.get('journal') or '',
                     'journal_if': pd['journal_if'],
+                    'if_tier': pd.get('if_tier') or 'unknown',
                 })
 
             gene_list = rd['gene_names'].split(', ') if rd.get('gene_names') else []
@@ -1222,9 +1366,7 @@ def _generate_evaluation_report(data: dict) -> str:
     lines.append(f"# 蛋白质结构可行性评估报告\n")
     lines.append(f"**UniProt ID**: {uniprot.get('uniprot_id', 'N/A')} | **{uniprot.get('protein_name', 'N/A')}**\n")
     lines.append(f"**基因名**: {', '.join(uniprot.get('gene_names', []) or ['N/A'])} | **物种**: {uniprot.get('organism', 'N/A')}\n")
-    mass_val = uniprot.get('mass')
-    mass_str = f"{mass_val:.0f} Da" if mass_val is not None else "N/A"
-    lines.append(f"**序列长度**: {uniprot.get('sequence_length', 0)} aa | **分子量**: {mass_str}\n")
+    lines.append(f"**序列长度**: {uniprot.get('sequence_length', 0)} aa | **分子量**: {(lambda m: f'{m:.0f} Da' if m is not None else 'N/A')(uniprot.get('mass'))}\n")
     lines.append(f"**已有PDB结构**: {len(structures)} 个 | **覆盖度**: {coverage:.1f}%\n")
 
     if uniprot.get('function'):
@@ -1460,16 +1602,24 @@ def api_evaluation_report():
 
 # ─── Generate HTML + JS, then start ────────────────────────────────────────
 if __name__ == "__main__":
-    html_path = paths()["script_dir"] / "pdb_index.html"
-    html = html_path.read_text(encoding='utf-8') if html_path.exists() else None
-    if not html:
-        import urllib.request
-        print("HTML file missing — please run /tmp/write_js.py first")
+    script_dir = paths()['script_dir']
+    html_path = script_dir / "pdb_index.html"
+
+    # Copy HTML template from package if not exists
+    if not html_path.exists():
+        import shutil
+        template_path = Path(__file__).parent / "templates" / "pdb_index.html"
+        if template_path.exists():
+            shutil.copy(template_path, html_path)
+            print(f"HTML template copied to: {html_path}")
+
+    if not html_path.exists():
+        print("HTML template missing — please ensure templates/pdb_index.html exists")
         exit(1)
+
     write_js()
-    _p = paths()
-    print(f"JS written: {(_p['script_dir'] / 'pdb_app.js').stat().st_size} bytes")
-    print("Open: http://localhost:5555")
+    print(f"JS written: {(script_dir / 'pdb_app.js').stat().st_size} bytes")
+    print(f"Open: http://{config.WEB_HOST}:{config.WEB_PORT}")
     init_eval_db()  # Initialize evaluation DB tables on startup
     init_weekly_reports_db()  # Initialize weekly reports DB on startup
-    app.run(host="0.0.0.0", port=5555, debug=False)
+    app.run(host=config.WEB_HOST, port=config.WEB_PORT, debug=config.WEB_DEBUG)
