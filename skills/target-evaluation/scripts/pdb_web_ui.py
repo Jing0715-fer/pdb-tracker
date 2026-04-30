@@ -3,25 +3,44 @@
 
 All paths are configurable via environment variables:
   PDB_DATA_DIR      - 数据根目录 (默认 ~/.pdb-tracker/)
-  PDB_DB_DIR        - 数据库目录 (默认 $PDB_DATA_DIR/data/)
+  PDB_DB_DIR        - 数据库目录 (默认 PDB_DATA_DIR/data/)
   PDB_DB_NAME       - 数据库文件名 (默认 pdb_tracker.db)
-  PDB_WEEKLY_DIR    - 周报目录 (默认 $PDB_DATA_DIR/weekly_reports/)
-  PDB_WEB_SCRIPT_DIR - Web UI 运行时目录 (默认 $PDB_DATA_DIR/web_scripts/)
+  PDB_WEEKLY_DIR    - 周报目录 (默认 PDB_DATA_DIR/weekly_reports/)
+  PDB_WEB_SCRIPT_DIR - Web UI 运行时目录 (默认 PDB_DATA_DIR/web_scripts/)
   PDB_WEB_PORT      - 端口 (默认 5555)
 """
 import os
 from pathlib import Path
 from flask import Flask, request, jsonify, Response, send_file
-import re, sqlite3, time, json, logging
+import re, sqlite3, subprocess, time, json, logging, datetime
+
+# Setup logging first
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger(__name__)
+
+# Load .env file for API keys
+try:
+    from dotenv import load_dotenv
+    # Try workspace .env first, then openclaw .env
+    for env_path in [
+        Path.home() / '.openclaw' / '.env',
+        Path.home() / '.env',
+    ]:
+        if env_path.exists():
+            load_dotenv(env_path)
+            logger.info(f"[env] Loaded {env_path}")
+            break
+except ImportError:
+    pass
 
 # ─── 配置 (支持环境变量覆盖) ──────────────────────────────────────────────
 def _get_data_dir() -> Path:
     if os.getenv("PDB_DATA_DIR"):
         return Path(os.getenv("PDB_DATA_DIR"))
-    return Path.home() / ".pdb-tracker"
+    return Path("/Users/lijing/Documents/my_note/LLM-Wiki/data")
 
 DATA_DIR = _get_data_dir()
-DB_DIR = Path(os.getenv("PDB_DB_DIR", str(DATA_DIR / "data")))
+DB_DIR = Path(os.getenv("PDB_DB_DIR", str(DATA_DIR)))
 DB_PATH = DB_DIR / os.getenv("PDB_DB_NAME", "pdb_tracker.db")
 REPORTS_DIR = Path(os.getenv("PDB_WEEKLY_DIR", str(DATA_DIR / "weekly_reports")))
 SCRIPT_DIR = Path(os.getenv("PDB_WEB_SCRIPT_DIR", str(DATA_DIR / "web_scripts")))
@@ -56,12 +75,14 @@ def write_js():
 
     L("function sortEntries(arr){return arr.slice().sort(function(a,b){var av=a[sortCol],bv=b[sortCol];if(sortCol==='journal_if'){av=(av==null||String(av).trim()===''||String(av).toLowerCase()==='unknown')?0:parseFloat(av);bv=(bv==null||String(bv).trim()===''||String(bv).toLowerCase()==='unknown')?0:parseFloat(bv);return sortAsc?(av-bv):(bv-av);}if(sortCol==='resolution'){av=(av==null||String(av).trim()===''||isNaN(parseFloat(av)))?999:parseFloat(av);bv=(bv==null||String(bv).trim()===''||isNaN(parseFloat(bv)))?999:parseFloat(bv);return sortAsc?(av-bv):(bv-av);}var an=parseFloat(av),bn=parseFloat(bv);var aNum=(av!=null&&String(av).trim()!==''&&!isNaN(an));var bNum=(bv!=null&&String(bv).trim()!==''&&!isNaN(bn));var cmp;if(aNum&&bNum){cmp=an-bn;}else if(aNum){cmp=-1;}else if(bNum){cmp=1;}else{cmp=String(av||'').localeCompare(String(bv||''));}return sortAsc?cmp:-cmp;});}")
 
-    L("function renderTable(rows){var tbody=document.getElementById('table-body');tbody.removeAttribute('data-eval-table');document.getElementById('entry-count').textContent=rows.length+' entries';if(!rows.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No entries</div></td></tr>\";return;}var html=[];for(var i=0;i<rows.length;i++){var e=rows[i];var origIdx=e._origIdx!=null?e._origIdx:i;var method=e.method||'';var bClass='badge-oth',mLabel=method;var mLower=method.toLowerCase();if(/electron crystallography/i.test(mLower)){bClass='badge-em';mLabel='ELECTRON CRYSTALLOGRAPHY';}else if(/electron microscopy|cryo/i.test(mLower)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(mLower)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(mLower)){bClass='badge-nmr';mLabel='NMR';}var res=e.resolution;var rClass='res-mid',rStr='-';if(res!=null&&String(res).trim()!==''&&!isNaN(parseFloat(res))&&parseFloat(res)>0){var rn=parseFloat(res);rClass=rn<=2.0?'res-good':rn>3.5?'res-poor':'res-mid';rStr=rn.toFixed(2);}var ifTier=e.if_tier||'';var tierBadge=(ifTier&&ifTier!=='unknown')?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifNum=parseFloat(e.journal_if);var hasValidIf=e.journal_if!=null&&String(e.journal_if).trim()!==''&&String(e.journal_if).toLowerCase()!=='unknown'&&!isNaN(ifNum)&&ifNum>0;var ifVal=hasValidIf?\" <span class='if-val'>IF \"+ifNum.toFixed(1)+\"</span>\":\" <span class='if-val'>To be published</span>\";var ligand=(e.ligand_info||e.ligand||'').trim();var ligs=ligand?(ligand.split(/;/).map(function(l){var trimmed=l.trim();var colonIdx=trimmed.indexOf(':');return colonIdx>0?trimmed.substring(0,colonIdx):trimmed;}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+origIdx+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join('');}html.push(\"<tr><td><span class='pdb-link' data-idx='\"+origIdx+\"' data-pdb='\"+escHtml(e.pdb_id)+\"'>\"+escHtml(e.pdb_id)+\"</span></td>\"+\"<td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td>\"+\"<td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td>\"+\"<td>\"+tierBadge+ifVal+\"</td>\"+\"<td class='title-cell' title='\"+escHtml(e.title||'')+\"'>\"+escHtml(e.title||'-')+\"</td>\"+\"<td>\"+(e.release_date||'-')+\"</td>\"+\"<td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}tbody.innerHTML=html.join('');}")
+    L("function renderTable(rows){var tbody=document.getElementById('table-body');tbody.removeAttribute('data-eval-table');document.getElementById('entry-count').textContent=rows.length+' entries';if(!rows.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No entries</div></td></tr>\";return;}var html=[];for(var i=0;i<rows.length;i++){var e=rows[i];var origIdx=e._origIdx!=null?e._origIdx:i;var method=e.method||'';var bClass='badge-oth',mLabel=method;var mLower=method.toLowerCase();if(/electron crystallography/i.test(mLower)){bClass='badge-em';mLabel='ELECTRON CRYSTALLOGRAPHY';}else if(/electron microscopy|cryo/i.test(mLower)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(mLower)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(mLower)){bClass='badge-nmr';mLabel='NMR';}var res=e.resolution;var rClass='res-mid',rStr='-';if(res!=null&&String(res).trim()!==''&&!isNaN(parseFloat(res))&&parseFloat(res)>0){var rn=parseFloat(res);rClass=rn<=2.0?'res-good':rn>3.5?'res-poor':'res-mid';rStr=rn.toFixed(2);}var ifTier=e.if_tier||'';var tierBadge=(ifTier&&ifTier!=='unknown')?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifNum=parseFloat(e.journal_if);var hasValidIf=e.journal_if!=null&&String(e.journal_if).trim()!==''&&String(e.journal_if).toLowerCase()!=='unknown'&&!isNaN(ifNum)&&ifNum>0;var ifVal=hasValidIf?\" <span class='if-val'>IF \"+ifNum.toFixed(1)+\"</span>\":\" <span class='if-val'>To be published</span>\";var ligand=(e.ligand_info||e.ligand||'').trim();var ligs=ligand?(ligand.split(/[;|,]/).map(function(l){var trimmed=l.trim();var colonIdx=trimmed.indexOf(':');return colonIdx>0?trimmed.substring(0,colonIdx):trimmed;}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+origIdx+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join(' ');}html.push(\"<tr><td><span class='pdb-link' data-idx='\"+origIdx+\"' data-pdb='\"+escHtml(e.pdb_id)+\"'>\"+escHtml(e.pdb_id)+\"</span></td>\"+\"<td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td>\"+\"<td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td>\"+\"<td>\"+tierBadge+ifVal+\"</td>\"+\"<td class='title-cell' title='\"+escHtml(e.title||'')+\"'>\"+escHtml(e.title||'-')+\"</td>\"+\"<td>\"+(e.release_date||'-')+\"</td>\"+\"<td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}tbody.innerHTML=html.join('');}")
 
-    L("document.getElementById('table-head').onclick=function(e){var th=e.target.closest('th');if(!th||!th.dataset.col)return;var col=th.dataset.col;if(sortCol===col){sortAsc=!sortAsc;}else{sortCol=col;sortAsc=false;}document.querySelectorAll('#table-head th').forEach(function(t){t.dataset.sorted='false';var a=t.querySelector('.sort-arrow');if(a)a.innerHTML='&#8645;';});th.dataset.sorted='true';var sa=th.querySelector('.sort-arrow');if(sa)sa.innerHTML=sortAsc?'&#8593;':'&#8595;';if(currentMode==='eval'){var sorted=sortEvalStructures(currentEvalStructures.slice());currentEvalStructures=sorted;renderEvalTable(sorted);}else{renderTable(sortEntries(allEntries.slice()));}};")
+    L("document.getElementById('table-head').onclick=function(e){var th=e.target.closest('th');if(!th||!th.dataset.col)return;var col=th.dataset.col;if(sortCol===col){sortAsc=!sortAsc;}else{sortCol=col;sortAsc=false;}document.querySelectorAll('#table-head th').forEach(function(t){t.dataset.sorted='false';var a=t.querySelector('.sort-arrow');if(a)a.innerHTML='&#8645;';});th.dataset.sorted='true';var sa=th.querySelector('.sort-arrow');if(sa)sa.innerHTML=sortAsc?'&#8593;':'&#8595;';if(currentMode==='eval'){var sorted=sortEvalStructures(currentEvalStructures.slice());currentEvalStructures=sorted;renderEvalTable(sorted,currentBlastResults);}else{renderTable(sortEntries(allEntries.slice()));}};")
 
     L("var ttPdb=document.getElementById('tt-pdb');")
     L("var ttLig=document.getElementById('tt-lig');")
+    L("var ttHomolog=document.getElementById('tt-homolog');")
+    L("function getBlastColorClass(type,val){if(type==='identity'){if(val>=70)return'blast-value-high';if(val>=40)return'blast-value-mid';return'blast-value-low';}if(type==='evalue'){if(val<1e-50)return'blast-value-high';if(val<1e-10)return'blast-value-mid';return'blast-value-low';}if(type==='coverage'){if(val>=80)return'blast-value-high';if(val>=50)return'blast-value-mid';return'blast-value-low';}return'';}")
     L("document.getElementById('table-body').addEventListener('mouseover',function(e){")
     L("  var pdbSpan=e.target.closest('.pdb-link');")
     L("  if(pdbSpan){")
@@ -76,14 +97,30 @@ def write_js():
     L("    document.getElementById('tt-pdb-date').textContent=entry.release_date||'-';")
     L("    document.getElementById('tt-pdb-journal').textContent=entry.journal||'-';")
     L("    document.getElementById('tt-pdb-if').textContent=(entry.journal_if!=null)?Number(entry.journal_if).toFixed(1):'-';")
-    L("    var ligs=((entry.ligand_info||entry.ligand||'').trim())?((entry.ligand_info||entry.ligand)||'').replace(/;/g,', '):'-';")
-    L("    document.getElementById('tt-pdb-ligs').textContent=ligs;")
+    L("    var ligs=((entry.ligand_info||entry.ligand||entry.ligands||'').trim())?((entry.ligand_info||entry.ligand||entry.ligands)||'').replace(/;/g,', '):'-';if(ligs!=='-'){var ligArr=entry.ligand_info?(entry.ligand_info.split('|').map(function(l){var parts=l.split(':');return parts[0]?parts[0].trim():l.trim();})):entry.ligand?(entry.ligand.split(/[;|]/).map(function(l){return l.trim().split(':')[0];})):entry.ligands?(entry.ligands.split(/[;|]/).map(function(l){return l.trim().split(':')[0];})):[];ligs=ligArr.filter(function(l){return l;}).join(', ')||'-';}document.getElementById('tt-pdb-ligs').textContent=ligs;")
     L("    var titleEl=document.getElementById('tt-pdb-title');")
     L("    if(entry.title){titleEl.textContent=entry.title;titleEl.style.display='block';}else{titleEl.style.display='none';}")
     L("    var img=document.getElementById('tt-pdb-img');")
     L("    img.src='https://cdn.rcsb.org/images/structures/'+(entry.pdb_id||'').toLowerCase()+'_assembly-1.jpeg';")
     L("    img.style.display='block';")
     L("    img.onerror=function(){this.style.display='none';};")
+    L("    var homologSection=document.getElementById('tt-pdb-homolog-section');")
+    L("    var pdbIdStr=entry.pdb_id||'';")
+    L("    var blastInfo=isEval&&currentBlastResults?currentBlastResults.find(function(b){return b.pdb_id&&b.pdb_id.toUpperCase()===pdbIdStr.toUpperCase();}):null;")
+    L("    if(blastInfo){")
+    L("      homologSection.style.display='block';")
+    L("      var seqLen=currentEvalData&&currentEvalData.uniprot?currentEvalData.uniprot.sequence_length:0;")
+    L("      var identity=blastInfo.identity||0;")
+    L("      var evalue=blastInfo.evalue||1;")
+    L("      var qcov=blastInfo.query_coverage||0;")
+    L("      var covPercent=seqLen>0?Math.round((qcov/seqLen)*100):0;")
+    L("      document.getElementById('tt-pdb-homolog-identity').innerHTML='<span class=\\''+getBlastColorClass('identity',identity)+'\\'>'+identity+'%</span>';")
+    L("      var evalueStr=evalue<0.001?evalue.toExponential(1):evalue.toFixed(3);")
+    L("      document.getElementById('tt-pdb-homolog-evalue').innerHTML='<span class=\\''+getBlastColorClass('evalue',evalue)+'\\'>'+evalueStr+'</span>';")
+    L("      document.getElementById('tt-pdb-homolog-coverage').innerHTML='<span class=\\''+getBlastColorClass('coverage',covPercent)+'\\'>'+covPercent+'%</span> ('+qcov+' aa)';if(seqLen<=0){document.getElementById('tt-pdb-homolog-coverage').textContent=qcov+' aa';}")
+    L("    }else{")
+    L("      homologSection.style.display='none';")
+    L("    }")
     L("    var rect=pdbSpan.getBoundingClientRect();")
     L("    var x=rect.right+14,y=rect.top;")
     L("    if(x+230>window.innerWidth)x=rect.left-244;")
@@ -92,6 +129,7 @@ def write_js():
     L("    ttPdb.style.top=y+'px';")
     L("    ttPdb.classList.add('show');")
     L("    ttLig.classList.remove('show');")
+    L("    ttHomolog.classList.remove('show');")
     L("    return;")
     L("  }")
     L("  var chip=e.target.closest('.lig-chip');")
@@ -135,14 +173,46 @@ def write_js():
     L("    ttLig.style.top=y+'px';")
     L("    ttLig.classList.add('show');")
     L("    ttPdb.classList.remove('show');")
+    L("    ttHomolog.classList.remove('show');")
+    L("    return;")
+    L("  }")
+    L("  var homologBadge=e.target.closest('.homolog-badge');")
+    L("  if(homologBadge){")
+    L("    var pdbId=homologBadge.getAttribute('data-blast-pdb');")
+    L("    var identity=parseFloat(homologBadge.getAttribute('data-identity'))||0;")
+    L("    var evalue=parseFloat(homologBadge.getAttribute('data-evalue'))||1;")
+    L("    var qcov=parseInt(homologBadge.getAttribute('data-qcov'),10)||0;")
+    L("    var seqLen=parseInt(homologBadge.getAttribute('data-seq-len'),10)||0;")
+    L("    var method=homologBadge.getAttribute('data-method')||'Unknown';")
+    L("    var res=homologBadge.getAttribute('data-res');")
+    L("    var title=homologBadge.getAttribute('data-title')||'';")
+    L("    var covPercent=seqLen>0?Math.round((qcov/seqLen)*100):0;")
+    L("    document.getElementById('tt-homolog-pdb').textContent=pdbId||'N/A';")
+    L("    document.getElementById('tt-homolog-identity').innerHTML='<span class=\\''+getBlastColorClass('identity',identity)+'\\'>'+identity+'%</span>';")
+    L("    var evalueStr=evalue<0.001?evalue.toExponential(1):evalue.toFixed(3);")
+    L("    document.getElementById('tt-homolog-evalue').innerHTML='<span class=\\''+getBlastColorClass('evalue',evalue)+'\\'>'+evalueStr+'</span>';")
+    L("    document.getElementById('tt-homolog-coverage').innerHTML='<span class=\\''+getBlastColorClass('coverage',covPercent)+'\\'>'+covPercent+'%</span> ('+qcov+'/'+seqLen+' aa)';if(seqLen<=0){document.getElementById('tt-homolog-coverage').textContent=qcov+' aa';}")
+    L("    document.getElementById('tt-homolog-method').textContent=fmtMethod(method);")
+    L("    document.getElementById('tt-homolog-resolution').textContent=res?res+' A':'-';")
+    L("    document.getElementById('tt-homolog-title').textContent=title?title.substring(0,100)+(title.length>100?'...':''):'No description';if(title){document.getElementById('tt-homolog-title').style.display='block';}else{document.getElementById('tt-homolog-title').style.display='none';}")
+    L("    var rect=homologBadge.getBoundingClientRect();")
+    L("    var x=rect.right+10,y=rect.top;")
+    L("    if(x+220>window.innerWidth)x=rect.left-230;")
+    L("    if(y+200>window.innerHeight)y=window.innerHeight-205;")
+    L("    ttHomolog.style.left=x+'px';")
+    L("    ttHomolog.style.top=y+'px';")
+    L("    ttHomolog.classList.add('show');")
+    L("    ttPdb.classList.remove('show');")
+    L("    ttLig.classList.remove('show');")
+    L("    return;")
     L("  }")
     L("});")
-    L("document.getElementById('table-body').addEventListener('mouseout',function(e){if(e.relatedTarget&&ttPdb.contains(e.relatedTarget))return;if(!e.target.closest('.pdb-link'))return;ttPdb.classList.remove('show');if(e.relatedTarget&&ttLig.contains(e.relatedTarget))return;if(!e.target.closest('.lig-chip'))return;ttLig.classList.remove('show');});")
+    L("document.getElementById('table-body').addEventListener('mouseout',function(e){if(e.relatedTarget&&ttPdb.contains(e.relatedTarget))return;if(!e.target.closest('.pdb-link'))return;ttPdb.classList.remove('show');if(e.relatedTarget&&ttLig.contains(e.relatedTarget))return;if(!e.target.closest('.lig-chip'))return;ttLig.classList.remove('show');if(e.relatedTarget&&ttHomolog.contains(e.relatedTarget))return;if(!e.target.closest('.homolog-badge'))return;ttHomolog.classList.remove('show');});")
     L("ttPdb.onmouseenter=function(){ttPdb.classList.add('show');};ttPdb.onmouseleave=function(){ttPdb.classList.remove('show');};")
-
-    L("document.getElementById('table-body').onclick=function(e){var ligChip=e.target.closest('.lig-chip');if(ligChip){var ligCode=ligChip.getAttribute('data-lig');if(ligCode)window.open('https://www.rcsb.org/ligand/'+encodeURIComponent(ligCode),'_blank');return;}var pdbSpan=e.target.closest('.pdb-link');if(pdbSpan){var pdbId=pdbSpan.getAttribute('data-pdb');if(pdbId)window.open('https://www.rcsb.org/structure/'+pdbId.toLowerCase(),'_blank');return;}};")
-
     L("ttLig.onmouseenter=function(){ttLig.classList.add('show');};ttLig.onmouseleave=function(){ttLig.classList.remove('show');};")
+    L("ttHomolog.onmouseenter=function(){ttHomolog.classList.add('show');};ttHomolog.onmouseleave=function(){ttHomolog.classList.remove('show');};")
+
+    L("document.getElementById('table-body').onclick=function(e){var ligChip=e.target.closest('.lig-chip');if(ligChip){var ligCode=ligChip.getAttribute('data-lig');if(ligCode)window.open('https://www.rcsb.org/ligand/'+encodeURIComponent(ligCode),'_blank');return;}var homologBadge=e.target.closest('.homolog-badge');if(homologBadge){var pdbId=homologBadge.getAttribute('data-blast-pdb');if(pdbId)window.open('https://www.rcsb.org/structure/'+pdbId.toLowerCase(),'_blank');return;}var pdbSpan=e.target.closest('.pdb-link');if(pdbSpan){var pdbId=pdbSpan.getAttribute('data-pdb');if(pdbId)window.open('https://www.rcsb.org/structure/'+pdbId.toLowerCase(),'_blank');return;}};")
 
     L("function switchTab(tab){activeTab=tab;document.querySelectorAll('.preview-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===tab);});document.getElementById('preview-content').style.display='block';if(currentMode==='eval'){if(tab==='summary')showEvalSummary();else if(tab==='report')showEvalFullReport();}else{if(tab==='summary')showSummary(findSnap(activeReport));else if(tab==='report')showFullReport(activeReport);}}")
 
@@ -154,7 +224,7 @@ def write_js():
 
     L("function onReportClick(name,item){activeReport=name;document.querySelectorAll('.report-item').forEach(function(i){i.classList.remove('active');});item.classList.add('active');document.getElementById('preview-panel').classList.remove('hidden');document.getElementById('preview-title').textContent=name;switchTab('summary');}")
 
-    L("function closePreview(){activeEvalId=null;activeReport=null;currentEvalStructures=[];currentEvalData=null;document.getElementById('preview-panel').classList.add('hidden');}")
+    L("function closePreview(){activeEvalId=null;activeReport=null;currentEvalStructures=[];currentEvalData=null;currentBlastResults=[];document.getElementById('preview-panel').classList.add('hidden');}")
 
     L("function renderReportList(files){console.log('renderReportList called with',files?files.length:'null','files, allReports.length='+allReports.length);var list=document.getElementById('report-list');if(!files||!files.length){list.innerHTML=\"<div class='report-empty'>No PDB reports</div>\";return;}list.innerHTML='';files.forEach(function(f){var dm=f.name.match(/(\\d{4}-\\d{2}-\\d{2})/);var item=document.createElement('div');item.className='report-item';item.innerHTML=\"<div class='rname'>\"+escHtml(f.name)+\"</div><div class='rtitle'>\"+(f.title||'')+\"</div><div class='rdate'>\"+(dm?dm[1]:'')+\"</div>\";item.onclick=(function(n,it){return function(){onReportClick(n,it);};})(f.name,item);list.appendChild(item);});}")
 
@@ -182,7 +252,7 @@ def write_js():
 
     L('function renderEvalReportsInDiv(container){if(!activeEvalId||!container)return;var entryReports=allEvalReports.filter(function(r){return r.uniprot_id===activeEvalId;});if(!entryReports.length){container.innerHTML="<div class=\'report-empty\' style=\'padding:10px;font-size:11px;\'>No evaluation reports</div>";return;}var html="<div style=\'font-size:11px;color:var(--primary);margin-bottom:8px;\'>Evaluation Reports</div><div style=\'display:flex;flex-direction:column;gap:6px;\'>";entryReports.forEach(function(r){var dateStr=r.created?r.created.substring(0,10):\'\';html+="<div class=\'report-item\' data-uid=\'"+r.uniprot_id+"\' onclick=\'onEvalMdReportClick(this)\' style=\'padding:8px 10px;font-size:11px;cursor:pointer;border-radius:6px;background:var(--bg);border:1px solid var(--border);transition:all 0.15s;\'><div style=\'font-family:var(--mono);color:var(--secondary);font-size:10px;font-weight:600;\'>"+escHtml(dateStr)+"</div><div style=\'font-size:10px;color:var(--primary);margin-top:3px;\'>"+escHtml(r.title||\'\')+"</div></div>";});html+="</div>";container.innerHTML=html;}')
 
-    L("function onEvalMdReportClick(el){var uid=el.getAttribute('data-uid');if(!uid)return;activeEvalMdReport=uid;var reportsDiv=document.getElementById('eval-reports-under');if(reportsDiv)renderEvalReportsInDiv(reportsDiv);var modal=document.getElementById('report-modal');var body=document.getElementById('modal-body');var title=document.getElementById('modal-title');title.textContent='Eval Report: '+uid;body.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#8987;</div>Loading...</div>\";modal.classList.add('show');fetch('/api/evaluation/report?uniprot='+encodeURIComponent(uid)).then(function(res){return res.text();}).then(function(md){body.innerHTML=\"<div class=\\\"md-content\\\">\"+renderMD(md)+\"</div>\";}).catch(function(){body.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#9888;</div>Failed to load</div>\";});}")
+    L("function onEvalMdReportClick(el){var uid=el.getAttribute('data-uid');if(!uid)return;activeEvalMdReport=uid;var reportsDiv=document.getElementById('eval-reports-under');if(reportsDiv)renderEvalReportsInDiv(reportsDiv);var modal=document.getElementById('report-modal');var body=document.getElementById('modal-body');var title=document.getElementById('modal-title');title.textContent='Eval Report: '+uid;body.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#8987;</div>Loading...</div>\";modal.classList.add('show');fetch('/api/evaluation/report?uniprot='+encodeURIComponent(uid)).then(function(res){return res.text();}).then(function(md){body.innerHTML=\"<div class=\\\"md-content\\\">\"+renderEvalMD(md)+\"</div>\";}).catch(function(){body.innerHTML=\"<div class=\\\"preview-empty\\\"><div class=\\\"preview-empty-icon\\\">&#9888;</div>Failed to load</div>\";});}")
     L('window.onEvalMdReportClick=onEvalMdReportClick;')
 
 
@@ -196,38 +266,359 @@ def write_js():
     L("document.getElementById('btn-close').onclick=closePreview;")
     L("document.querySelectorAll('.preview-tab').forEach(function(t){t.onclick=(function(tab){return function(){switchTab(tab);};})(t.getAttribute('data-tab'));});")
 
-    L("var currentMode='weekly';var activeEvalId=null;var activeEvalSearch='';var currentEvalStructures=[];var currentEvalData=null;")
-    L("function setMode(mode){currentMode=mode;activeEvalId=null;currentEvalStructures=[];activeEvalMethod='all';activeEvalPdbSearch='';filteredEvalStructures=[];document.getElementById('btn-mode-weekly').classList.toggle('active',mode==='weekly');document.getElementById('btn-mode-eval').classList.toggle('active',mode==='eval');document.getElementById('btn-mode-weekly').style.background=mode==='weekly'?'rgba(6,182,212,0.12)':'var(--card)';document.getElementById('btn-mode-weekly').style.color=mode==='weekly'?'var(--primary)':'var(--muted)';document.getElementById('btn-mode-weekly').style.borderColor=mode==='weekly'?'rgba(6,182,212,0.4)':'var(--border)';document.getElementById('btn-mode-eval').style.background=mode==='eval'?'rgba(139,92,246,0.12)':'var(--card)';document.getElementById('btn-mode-eval').style.color=mode==='eval'?'var(--secondary)':'var(--muted)';document.getElementById('btn-mode-eval').style.borderColor=mode==='eval'?'rgba(139,92,246,0.4)':'var(--border)';document.getElementById('sidebar-weeks-header').style.display=mode==='weekly'?'block':'none';document.getElementById('week-list').style.display=mode==='weekly'?'flex':'none';document.getElementById('eval-sidebar').style.display=mode==='eval'?'flex':'none';document.getElementById('weekly-toolbar').style.display=mode==='eval'?'none':'flex';document.getElementById('eval-toolbar-main').style.display=mode==='eval'?'flex':'none';document.getElementById('weekly-table').style.display='block';var weekReportsDiv=document.getElementById('week-reports');if(weekReportsDiv)weekReportsDiv.style.display='none';var evalReportsDiv=document.getElementById('eval-reports-under');if(evalReportsDiv)evalReportsDiv.style.display='none';document.getElementById('eval-back-container').style.display='none';document.getElementById('back-button-container').style.display='none';var weekRep=document.getElementById('week-reports');if(weekRep)weekRep.remove();if(mode==='weekly'){activeWeek=null;document.getElementById('preview-panel').classList.add('hidden');document.getElementById('table-body').removeAttribute('data-eval-table');document.querySelectorAll('#week-list .report-item').forEach(function(c){c.style.display='';c.classList.remove('active');});document.getElementById('sel-week').value='all';renderTable(sortEntries(allEntries.slice()));}else{document.getElementById('sel-eval-main-method').value='all';document.getElementById('inp-eval-search').value='';document.getElementById('preview-panel').classList.add('hidden');closePreview();renderEvalTable([]);loadEvalList();}}")
+    L("var currentMode='weekly';var activeEvalId=null;var activeEvalSearch='';var currentEvalStructures=[];var currentEvalData=null;var currentBlastResults=[];")
+    L("function setMode(mode){currentMode=mode;activeEvalId=null;currentEvalStructures=[];currentBlastResults=[];activeEvalMethod='all';activeEvalPdbSearch='';filteredEvalStructures=[];document.getElementById('btn-mode-weekly').classList.toggle('active',mode==='weekly');document.getElementById('btn-mode-eval').classList.toggle('active',mode==='eval');document.getElementById('btn-mode-weekly').style.background=mode==='weekly'?'rgba(6,182,212,0.12)':'var(--card)';document.getElementById('btn-mode-weekly').style.color=mode==='weekly'?'var(--primary)':'var(--muted)';document.getElementById('btn-mode-weekly').style.borderColor=mode==='weekly'?'rgba(6,182,212,0.4)':'var(--border)';document.getElementById('btn-mode-eval').style.background=mode==='eval'?'rgba(139,92,246,0.12)':'var(--card)';document.getElementById('btn-mode-eval').style.color=mode==='eval'?'var(--secondary)':'var(--muted)';document.getElementById('btn-mode-eval').style.borderColor=mode==='eval'?'rgba(139,92,246,0.4)':'var(--border)';document.getElementById('sidebar-weeks-header').style.display=mode==='weekly'?'block':'none';document.getElementById('week-list').style.display=mode==='weekly'?'flex':'none';document.getElementById('eval-sidebar').style.display=mode==='eval'?'flex':'none';document.getElementById('weekly-toolbar').style.display=mode==='eval'?'none':'flex';document.getElementById('eval-toolbar-main').style.display=mode==='eval'?'flex':'none';document.getElementById('weekly-table').style.display='block';var weekReportsDiv=document.getElementById('week-reports');if(weekReportsDiv)weekReportsDiv.style.display='none';var evalReportsDiv=document.getElementById('eval-reports-under');if(evalReportsDiv)evalReportsDiv.style.display='none';document.getElementById('eval-back-container').style.display='none';document.getElementById('back-button-container').style.display='none';var weekRep=document.getElementById('week-reports');if(weekRep)weekRep.remove();if(mode==='weekly'){activeWeek=null;document.getElementById('preview-panel').classList.add('hidden');document.getElementById('table-body').removeAttribute('data-eval-table');document.querySelectorAll('#week-list .report-item').forEach(function(c){c.style.display='';c.classList.remove('active');});document.getElementById('sel-week').value='all';renderTable(sortEntries(allEntries.slice()));}else{activeBatchId=null;activeEvalId=null;document.getElementById('sel-eval-main-method').value='all';document.getElementById('inp-eval-search').value='';document.getElementById('preview-panel').classList.add('hidden');closePreview();renderEvalTable([],[]);loadEvalList();}}")
 
-    L("function renderEvalMD(md){var h=md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');")
-    L("h=h.replace(/```([\\s\\S]*?)```/g,'<pre><code>$1</code></pre>');")
-    L("h=h.replace(/`([^`]+)`/g,'<code>$1</code>');")
-    L("h=h.replace(/^### (.+)$/gm,'<h3>$1</h3>');")
-    L("h=h.replace(/^## (.+)$/gm,'<h2>$1</h2>');")
-    L("h=h.replace(/^# (.+)$/gm,'<h1>$1</h1>');")
-    L("h=h.replace(/^> (.+)$/gm,'<blockquote>$1</blockquote>');")
-    L("h=h.replace(/^- (.+)$/gm,'<li>$1</li>');")
-    L("h=h.replace(/(<li>[\\s\\S]*?<\\/li>)+/g,'<ul>$&</ul>');")
-    L("h=h.replace(/^\\|.*\\|\\s*$/gm,function(row){var cells=row.split('|').slice(1,-1);var isSeparator=cells.every(function(c){return /^\\s*[-:]+\\s*$/.test(c);});if(isSeparator)return'';var htmlCells=cells.map(function(c){return'<td>'+c.trim()+'</td>';}).join('');return'<tr>'+htmlCells+'</tr>';});")
-    L("h=h.replace(/(<tr>[\\s\\S]*?<\\/tr>\\s*)+/g,'<table class=\\'md-table\\'>$&</table>');")
-    L("h=h.replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>');")
-    L("h=h.replace(/\\*(.+?)\\*\\*/g,'<em>$1</em>');")
-    L("h=h.replace(/\\n\\n+/g,'</p><p>');")
-    L("return '<p>'+h+'</p>'.replace(/<p>\\s*<\\/p>/g,'');}")
+    L("function renderEvalMD(md){var h=md.replace(/\\\\n/g,\'\\n\');return marked.parse(h);}")
+    L("var activeBatchId=null;var currentBatchData=null;var currentBatchSubTargets=[];")
+    L("async function loadEvalList(){console.log(\'loadEvalList called, search=\',activeEvalSearch);var q=encodeURIComponent(activeEvalSearch);var url=\'/api/evaluations\';if(q)url+=\'?q=\'+q;try{var evals=await fetch(url).then(function(r){return r.json();});renderEvalList(evals);}catch(e){renderEvalList([]);}}")
 
-    L("async function loadEvalList(){console.log('loadEvalList called, search=',activeEvalSearch);var q=encodeURIComponent(activeEvalSearch);var url='/api/evaluations';if(q)url+='?q='+q;try{var evals=await fetch(url).then(function(r){return r.json();});renderEvalList(evals);}catch(e){renderEvalList([]);}}")
-
-    L("function renderEvalList(evals){var list=document.getElementById('eval-list');if(!evals||!evals.length){list.innerHTML=\"<div class='report-empty' style='font-size:11px;'>\"+(activeEvalSearch?'无匹配结果':'暂无评估记录')+\"</div>\";return;}list.innerHTML='';evals.forEach(function(e){var item=document.createElement('div');item.className='report-item'+(activeEvalId===e.uniprot_id?' active':'');item.dataset.uid=e.uniprot_id;var scores=e.scores||{};var bestScore=0;for(var m in scores)if(scores[m].score>bestScore)bestScore=scores[m].score;var scoreColor=bestScore>=7?'var(--success)':bestScore>=5?'var(--accent)':'var(--danger)';item.innerHTML=\"<div class='rname' style='font-size:11px;'><span style='font-family:var(--mono);color:var(--accent);'>\"+e.uniprot_id+\"</span> <span style='font-size:9px;color:\"+scoreColor+\";'>\"+bestScore+\"</span></div><div class='rtitle' style='font-size:10px;'>\"+escHtml(e.protein_name||'')+\"</div><div class='rdate' style='font-size:9px;color:var(--muted);'>\"+e.gene_name+\"</div>\";item.onclick=(function(uid){return function(){onEvalClick(uid);};})(e.uniprot_id);list.appendChild(item);});}")
 
     L("document.getElementById('btn-modal-close').onclick=function(){document.getElementById('report-modal').classList.remove('show');};")
     L("document.getElementById('report-modal').onclick=function(e){if(e.target===this)document.getElementById('report-modal').classList.remove('show');};")
 
-    L("async function onEvalClick(uniprotId){activeEvalId=uniprotId;activeEvalMethod='all';activeEvalPdbSearch='';document.getElementById('sel-eval-main-method').value='all';document.getElementById('inp-eval-search').value='';var list=document.getElementById('eval-list');var items=list.querySelectorAll('.report-item');var selectedItem=null;items.forEach(function(i){if(i.dataset.uid===uniprotId){i.classList.add('active');i.style.display='';selectedItem=i;}else{i.classList.remove('active');i.style.display='none';}});if(selectedItem&&selectedItem!==list.firstChild){list.insertBefore(selectedItem,list.firstChild);}document.getElementById('eval-back-container').style.display='block';try{var data=await fetch('/api/evaluations/'+encodeURIComponent(uniprotId)).then(function(r){return r.json();});if(data.error){currentEvalData=null;currentEvalStructures=[];filteredEvalStructures=[];renderEvalTable([]);return;}currentEvalData=data;var rawStructures=data.pdb_structures||[];currentEvalStructures=rawStructures.map(function(s,i){s._origIdx=i;return s;});filteredEvalStructures=currentEvalStructures.slice();renderEvalTable(filteredEvalStructures);activeEvalMdReport=null;await loadEvalReports();var reportsDiv=document.getElementById('eval-reports-under');if(!reportsDiv){reportsDiv=document.createElement('div');reportsDiv.id='eval-reports-under';reportsDiv.className='eval-reports-under';reportsDiv.style.cssText='padding:8px 10px;border-top:1px solid var(--border);background:var(--card);margin-top:4px;';}if(selectedItem){selectedItem.insertAdjacentElement('afterend',reportsDiv);}renderEvalReportsInDiv(reportsDiv);if(reportsDiv)reportsDiv.style.display='block';}catch(e){currentEvalData=null;currentEvalStructures=[];filteredEvalStructures=[];renderEvalTable([]);}}")
+    L("// ─── BATCH EVALUATION SUPPORT (added by patch) ───────────────────────────────")
+
+    L("// New state variables")
+    L("var activeBatchId = null;")
+    L("var currentBatchData = null;")
+    L("var currentBatchSubTargets = [];")
+    L("var activeBatchSubTarget = null;")
+
+    L("function renderBatchSubTargets(batchId, subTargets) {")
+    L("    var list = document.getElementById(\'eval-list\');")
+    L("    var oldSubs = list.querySelectorAll(\'.sub-target-item\');")
+    L("    oldSubs.forEach(function(s) { s.remove(); });")
+    L("    var batchItem = list.querySelector(\'.batch-item.active\');")
+    L("    if (!subTargets || !subTargets.length) return;")
+    L("    var frag = document.createDocumentFragment();")
+    L("    subTargets.forEach(function(st) {")
+    L("        var subItem = document.createElement(\'div\');")
+    L("        subItem.className = \'report-item sub-target-item\' + (activeEvalId === st.uniprot_id ? \' active\' : \'\');")
+    L("        subItem.dataset.uid = st.uniprot_id;")
+    L("        var scores = st.scores || {};")
+    L("        var bestScore = 0;")
+    L("        for (var m in scores) if (scores[m].score > bestScore) bestScore = scores[m].score;")
+    L("        var scoreColor = bestScore >= 7 ? \'var(--success)\' : bestScore >= 5 ? \'var(--accent)\' : \'var(--danger)\';")
+    L("        subItem.innerHTML = \"<div style=\'padding-left:16px;border-left:2px solid var(--secondary);margin-bottom:2px;\'>\" +")
+    L("            \"<div class=\'rname\' style=\'font-size:10px;\'>\" +")
+    L("            \"<span style=\'font-family:var(--mono);color:var(--primary);\'>\" + st.uniprot_id + \"</span> \" +")
+    L("            \"<span style=\'font-size:9px;color:\" + scoreColor + \";\'>\" + bestScore + \"</span></div>\" +")
+    L("            \"<div class=\'rtitle\' style=\'font-size:9px;\'>\" + escHtml(st.protein_name || \'\') + \"</div>\" +")
+    L("            \"<div class=\'rdate\' style=\'font-size:8px;color:var(--muted);\'>PDB:\" + st.pdb_count + \" | Cov:\" + st.coverage + \"%</div>\" +")
+    L("            \"</div>\";")
+    L("        subItem.onclick = (function(uid) { return function() { onEvalClick(uid); }; })(st.uniprot_id);")
+    L("        frag.appendChild(subItem);")
+    L("    });")
+    L("    if (batchItem) {")
+    L("        batchItem.insertAdjacentElement(\'afterend\', frag);")
+    L("    } else {")
+    L("        list.appendChild(frag);")
+    L("    }")
+    L("    console.log(\'DEBUG renderBatchSubTargets: inserted \' + subTargets.length + \' sub-targets, batchItem found=\' + (batchItem ? \'yes\' : \'no\') + \', children in list now=\' + list.children.length);")
+    L("}")
+
+    L("function renderBatchPreview(batchData) { console.log('DEBUG renderBatchPreview called: subTargets=' + currentBatchSubTargets.length);")
+    L("    document.getElementById(\'preview-panel\').classList.remove(\'hidden\');")
+    L("    document.getElementById(\'preview-title\').textContent = \'Batch: \' + batchData.batch_id;")
+    L("    var c = document.getElementById(\'preview-content\');")
+    L("    var subCount = currentBatchSubTargets.length;")
+    L("    var subHtml = \"<div style=\'padding:8px 0 4px;font-size:11px;color:var(--muted);\'>\" + subCount + \" 个子靶点</div>\" +")
+    L("        \"<div style=\'display:flex;flex-direction:column;gap:4px;margin-bottom:10px;\' id=\'batch-sub-list\'></div>\";")
+    L("    currentBatchSubTargets.forEach(function(st) {")
+    L("        var scores = st.scores || {};")
+    L("        var best = 0;")
+    L("        for (var m in scores) if (scores[m].score > best) best = scores[m].score;")
+    L("        var sColor = best >= 7 ? \'var(--success)\' : best >= 5 ? \'var(--accent)\' : \'var(--danger)\';")
+    L("        var div = document.createElement(\'div\');")
+    L("        div.style.cssText = \'padding:6px 8px;background:var(--bg);border-radius:4px;font-size:10px;cursor:pointer;border:1px solid var(--border);\';")
+    L("        div.innerHTML = \"<span style=\'font-family:var(--mono);color:var(--primary);\'>\" + st.uniprot_id + \"</span> \" +")
+    L("            \"<span style=\'color:\" + sColor + \";\'>\" + best.toFixed(1) + \"/10</span> \" +")
+    L("            \"<span style=\'color:var(--muted);\'>\" + escHtml(st.protein_name || \'\') + \"</span>\";")
+    L("        div.onclick = (function(uid) { return function() { onBatchSubTargetClick(uid); }; })(st.uniprot_id);")
+    L("        document.getElementById(\'batch-sub-list\').appendChild(div);")
+    L("    });")
+    L("    var combinedReport = batchData.combined_report || \'\';")
+    L("    if (combinedReport) {")
+    L("        c.innerHTML = subHtml + \"<div class=\'md-content\'>\" + renderEvalMD(combinedReport) + \"</div>\";")
+    L("    } else {")
+    L("        c.innerHTML = subHtml + \"<div class=\'preview-empty\'><div class=\'preview-empty-icon\'>&#128196;</div><div style=\'font-size:11px;color:var(--muted);margin-top:6px;\'>暂无综合评估报告</div></div>\";")
+    L("    }")
+    L("}")
+
+    L("async function onBatchClick(batchId) { console.log('DEBUG onBatchClick START');")
+    L("    switchTab('summary');")
+    L("    activeBatchId = batchId;")
+    L("    activeEvalId = null;")
+    L("    currentBatchSubTargets = [];")
+    L("    document.getElementById(\'eval-back-container\').style.display = \'block\';")
+    L("    document.getElementById(\'btn-eval-back\').textContent = \'返回批次列表\';")
+    L("    var list = document.getElementById(\'eval-list\');")
+    L("    var items = list.querySelectorAll(\'.report-item\');")
+    L("    var selectedBatch = null;")
+    L("    items.forEach(function(i) {")
+    L("        if (i.dataset.batch === batchId) {")
+    L("            i.classList.add(\'active\');")
+    L("            i.style.display = \'\';")
+    L("            selectedBatch = i;")
+    L("        } else {")
+    L("            i.classList.remove(\'active\');")
+    L("            i.style.display = \'none\';")
+    L("        }")
+    L("    });")
+    L("    if (selectedBatch && selectedBatch !== list.firstChild) {")
+    L("        list.insertBefore(selectedBatch, list.firstChild);")
+    L("    }")
+    L("    var oldEvalReports = document.getElementById('eval-reports-under'); if(oldEvalReports) oldEvalReports.remove();")
+    L("    try {")
+    L("        var batchData = await fetch(\'/api/batches/\' + encodeURIComponent(batchId)).then(function(r) { return r.json(); }); console.log(\'DEBUG after fetch: sub_targets=\' + (batchData.sub_targets?batchData.sub_targets.length:\'null\') + \', error=\' + batchData.error);")
+    L("        if (batchData.error) {")
+    L("            currentBatchData = null;")
+    L("            renderEvalTable([], []);")
+    L("            return;")
+    L("        }")
+    L("        currentBatchData = batchData;")
+    L("        console.log('DEBUG onBatchClick: subTargets=' + currentBatchSubTargets.length + ', first st has ' + (currentBatchSubTargets[0] ? currentBatchSubTargets[0].blast_results.length : 0) + ' blast results');")
+    L("        console.log('DEBUG ASSIGN: batchData.sub_targets=' + (batchData.sub_targets?batchData.sub_targets.length:'null') + ', setting currentBatchSubTargets'); currentBatchSubTargets = batchData.sub_targets || []; console.log('DEBUG ASSIGN DONE: currentBatchSubTargets.length=' + currentBatchSubTargets.length);")
+    L("        renderBatchSubTargets(batchId, currentBatchSubTargets);")
+    L("        console.log('DEBUG before renderBatchPreview: subTargets=' + (currentBatchSubTargets?currentBatchSubTargets.length:'null')); renderBatchPreview(batchData); console.log('DEBUG after renderBatchPreview');")
+    L("        var allStructures = [];")
+    L("        var allBlast = [];")
+    L("        for (var i = 0; i < currentBatchSubTargets.length; i++) {")
+    L("            var st = currentBatchSubTargets[i];")
+    L("            if (st.pdb_structures) { for (var j = 0; j < st.pdb_structures.length; j++) { st.pdb_structures[j]._subTarget = st.uniprot_id; allStructures.push(st.pdb_structures[j]); } }")
+    L("            if (st.blast_results) { for (var j = 0; j < st.blast_results.length; j++) { st.blast_results[j]._subTarget = st.uniprot_id; allBlast.push(st.blast_results[j]); } }")
+    L("        }")
+    L("        currentEvalStructures = allStructures.map(function(s, i) { s._origIdx = i; return s; });")
+    L("        currentBlastResults = allBlast;")
+    L("        filteredEvalStructures = currentEvalStructures.slice();")
+    L("        renderEvalTable(filteredEvalStructures, currentBlastResults);")
+    L("        var reportsDiv = document.createElement('div');")
+    L("        reportsDiv.id = 'eval-reports-under';")
+    L("        reportsDiv.style.cssText = 'padding:8px 10px;border-top:1px solid var(--border);margin-top:4px;overflow-y:auto;max-height:250px;';")
+    L("        if (selectedItem) { selectedItem.insertAdjacentElement('afterend', reportsDiv); } else { var evalList = document.getElementById('eval-list'); evalList.insertAdjacentElement('afterend', reportsDiv); }")
+    L("        await loadEvalReports();")
+    L("        renderEvalReportsInDiv(reportsDiv);")
+    L("    } catch(e) {")
+    L("        currentBatchData = null;")
+    L("        currentBatchSubTargets = [];")
+    L("        renderEvalTable([], []);")
+    L("    }")
+    L("}")
+
+    L("// Updated renderEvalList: handles both batch and individual entries")
+    L("function renderEvalList(evals) {")
+    L("    var list = document.getElementById(\'eval-list\');")
+    L("    if (!evals || !evals.length) {")
+    L("        list.innerHTML = \"<div class=\'report-empty\' style=\'font-size:11px;\'>\" + (activeEvalSearch ? \'无匹配结果\' : \'暂无评估记录\') + \"</div>\";")
+    L("        return;")
+    L("    }")
+    L("    list.innerHTML = \'\';")
+    L("    evals.forEach(function(e) {")
+    L("        if (e.is_batch) {")
+    L("            // Batch entry")
+    L("            var item = document.createElement(\'div\');")
+    L("            item.className = \'report-item batch-item\' + (activeBatchId === e.batch_id ? \' active\' : \'\');")
+    L("            item.dataset.batch = e.batch_id;")
+    L("            var subCount = e.sub_target_count || 0;")
+    L("            var scoreStr = e.best_score > 0 ? \" <span style=\'font-size:9px;color:\" + e.score_color + \";\'>\" + e.best_score.toFixed(1) + \"</span>\" : \'\';")
+    L("            item.innerHTML = \"<div class=\'rname\' style=\'font-size:11px;\'>\" +")
+    L("                \"<span style=\'font-family:var(--mono);color:var(--secondary);font-weight:700;\'>Batch</span> \" +")
+    L("                \"<span style=\'font-size:9px;color:var(--accent);\'>\" + escHtml(e.batch_id || \'\') + \"</span>\" + scoreStr +")
+    L("                \"</div>\" +")
+    L("                \"<div class=\'rtitle\' style=\'font-size:10px;\'>\" + escHtml(e.title || \'\') + \"</div>\" +")
+    L("                \"<div class=\'rdate\' style=\'font-size:9px;color:var(--muted);\'>\" + subCount + \"个子靶点</div>\";")
+    L("            var delBtn = document.createElement('button');")
+    L("            delBtn.textContent = 'x';")
+    L("            delBtn.style.cssText = 'position:absolute;right:4px;top:4px;width:16px;height:16px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:3px;color:var(--danger);font-size:9px;cursor:pointer;line-height:1;padding:0;opacity:0.7;';")
+    L("            delBtn.onclick = (function(bid) { return function(ev) { ev.stopPropagation(); if(confirm('Delete batch ' + bid + '?')) deleteBatch(bid); }; })(e.batch_id);")
+    L("            item.style.cssText = 'position:relative;padding-right:28px;';")
+    L("            item.appendChild(delBtn);")
+    L("            item.onclick = (function(bid) { return function() { onBatchClick(bid); }; })(e.batch_id);")
+    L("            list.appendChild(item);")
+    L("        } else {")
+    L("            // Individual entry")
+    L("            var item = document.createElement('div');")
+    L("            item.className = 'report-item' + (activeEvalId === e.uniprot_id ? ' active' : '');")
+    L("            item.dataset.uid = e.uniprot_id;")
+    L("            var scores = e.scores || {};")
+    L("            var bestScore = 0;")
+    L("            for (var m in scores) if (scores[m].score > bestScore) bestScore = scores[m].score;")
+    L("            var scoreColor = bestScore >= 7 ? 'var(--success)' : bestScore >= 5 ? 'var(--accent)' : 'var(--danger)';")
+    L("            item.innerHTML = \"<div class='rname' style='font-size:11px;'>\" +")
+
+    L("                \"<span style='font-family:var(--mono);color:var(--accent);'>\" + e.uniprot_id + \"</span> \" +")
+
+    L("                \"<span style='font-size:9px;color:\" + scoreColor + \";'>\" + bestScore + \"</span></div>\" +")
+
+    L("                \"<div class='rtitle' style='font-size:10px;'>\" + escHtml(e.protein_name || '') + \"</div>\" +")
+
+    L("                \"<div class='rdate' style='font-size:9px;color:var(--muted);'>\" + e.gene_name + \"</div>\";")
+
+    L("            var delBtn2 = document.createElement('button');")
+    L("            delBtn2.textContent = 'x';")
+    L("            delBtn2.style.cssText = 'position:absolute;right:4px;top:4px;width:16px;height:16px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:3px;color:var(--danger);font-size:9px;cursor:pointer;line-height:1;padding:0;opacity:0.7;';")
+    L("            delBtn2.onclick = (function(uid) { return function(ev) { ev.stopPropagation(); if(confirm('Delete ' + uid + '?')) deleteEval(uid); }; })(e.uniprot_id);")
+    L("            item.style.cssText = 'position:relative;padding-right:28px;';")
+    L("            item.appendChild(delBtn2);")
+    L("            item.onclick = (function(uid) { return function() { onEvalClick(uid); }; })(e.uniprot_id);")
+    L("            list.appendChild(item);")
+    L("        }")
+    L("    });")
+    L("}")
+
+    L("// Updated onEvalClick: batch-aware")
+    L("async function onEvalClick(uniprotId) {")
+    L("    activeEvalId = uniprotId;")
+    L("    activeEvalMethod = \'all\';")
+    L("    activeEvalPdbSearch = \'\';")
+    L("    document.getElementById(\'sel-eval-main-method\').value = \'all\';")
+    L("    document.getElementById(\'inp-eval-search\').value = \'\';")
+    L("    var oldReportsDiv = document.getElementById(\'eval-reports-under\');")
+    L("    if (oldReportsDiv) { oldReportsDiv.remove(); }")
+    L("    var list = document.getElementById(\'eval-list\');")
+    L("    var items = list.querySelectorAll(\'.report-item\');")
+    L("    var selectedItem = null;")
+    L("    items.forEach(function(i) {")
+    L("        if (i.dataset.uid === uniprotId) {")
+    L("            i.classList.add(\'active\');")
+    L("            i.style.display = \'\';")
+    L("            selectedItem = i;")
+    L("        } else {")
+    L("            i.classList.remove(\'active\');")
+    L("            i.style.display = \'none\';")
+    L("        }")
+    L("    });")
+    L("    if (selectedItem && selectedItem !== list.firstChild) {")
+    L("        list.insertBefore(selectedItem, list.firstChild);")
+    L("    }")
+    L("    document.getElementById(\'eval-back-container\').style.display = \'block\';")
+    L("    if (activeBatchId) {")
+    L("        document.getElementById(\'btn-eval-back\').textContent = \'返回批次\';")
+    L("    } else {")
+    L("        document.getElementById(\'btn-eval-back\').textContent = \'返回列表\';")
+    L("    }")
+    L("    var oldEvalReports = document.getElementById('eval-reports-under'); if(oldEvalReports) oldEvalReports.remove();")
+    L("    try {")
+    L("        var data = await fetch(\'/api/evaluations/\' + encodeURIComponent(uniprotId)).then(function(r) { return r.json(); });")
+    L("        if (data.error) {")
+    L("            currentEvalData = null;")
+    L("            currentEvalStructures = [];")
+    L("            filteredEvalStructures = [];")
+    L("            currentBlastResults = [];")
+    L("            renderEvalTable([], []);")
+    L("            return;")
+    L("        }")
+    L("        currentEvalData = data;")
+    L("        var rawStructures = data.pdb_structures || [];")
+    L("        currentEvalStructures = rawStructures.map(function(s, i) { s._origIdx = i; return s; });")
+    L("        currentBlastResults = data.blast_results || [];")
+    L("        filteredEvalStructures = currentEvalStructures.slice();")
+    L("        renderEvalTable(filteredEvalStructures, currentBlastResults);")
+    L("        var reportsDiv = document.createElement('div');")
+    L("        reportsDiv.id = 'eval-reports-under';")
+    L("        reportsDiv.style.cssText = 'padding:8px 10px;border-top:1px solid var(--border);margin-top:4px;overflow-y:auto;max-height:250px;';")
+    L("        if (selectedItem) { selectedItem.insertAdjacentElement('afterend', reportsDiv); } else { var evalList = document.getElementById('eval-list'); evalList.insertAdjacentElement('afterend', reportsDiv); }")
+    L("        await loadEvalReports();")
+    L("        renderEvalReportsInDiv(reportsDiv);")
+    L("    } catch(e) {")
+    L("        currentEvalData = null;")
+    L("        currentEvalStructures = [];")
+    L("        filteredEvalStructures = [];")
+    L("        currentBlastResults = [];")
+    L("        renderEvalTable([], []);")
+    L("    }")
+    L("}")
+    L("async function onBatchSubTargetClick(uniprotId) {")
+    L("    var st = currentBatchSubTargets.find(function(s) { return s.uniprot_id === uniprotId; });")
+    L("    if (!st) return;")
+    L("    activeEvalId = uniprotId;")
+    L("    activeBatchSubTarget = uniprotId;")
+    L("    document.getElementById('eval-back-container').style.display = 'block';")
+    L("    document.getElementById('btn-eval-back').textContent = '返回批次';")
+    L("    var list = document.getElementById('eval-list');")
+    L("    var items = list.querySelectorAll('.report-item');")
+    L("    items.forEach(function(i) {")
+    L("        if (i.dataset.uid === uniprotId) {")
+    L("            i.classList.add('active');")
+    L("            i.style.display = '';")
+    L("        } else {")
+    L("            i.classList.remove('active');")
+    L("            i.style.display = 'none';")
+    L("        }")
+    L("    });")
+    L("    var allStructures = [];")
+    L("    var allBlast = [];")
+    L("    if (st.pdb_structures) { for (var j=0;j<st.pdb_structures.length;j++) { st.pdb_structures[j]._subTarget = st.uniprot_id; allStructures.push(st.pdb_structures[j]); } }")
+    L("    if (st.blast_results) { for (var j=0;j<st.blast_results.length;j++) { st.blast_results[j]._subTarget = st.uniprot_id; allBlast.push(st.blast_results[j]); } }")
+    L("    currentEvalStructures = allStructures;")
+    L("    currentBlastResults = allBlast;")
+    L("    filteredEvalStructures = currentEvalStructures.slice();")
+    L("    renderEvalTable(filteredEvalStructures, currentBlastResults);")
+    L("}")
+    L("async function deleteEval(uniprotId) {")
+    L("    if (!confirm('Delete evaluation for ' + uniprotId + '?')) return;")
+    L("    var oldEvalReports = document.getElementById('eval-reports-under'); if(oldEvalReports) oldEvalReports.remove();")
+    L("    try {")
+    L("        var res = await fetch('/api/evaluations/' + encodeURIComponent(uniprotId), {method: 'DELETE'});")
+    L("        if (res.ok) {")
+    L("            var evals = await fetch('/api/evaluations').then(function(r){return r.json();});")
+    L("            renderEvalList(evals);")
+    L("            setMode('eval');")
+    L("        } else {")
+    L("            alert('Failed to delete: ' + uniprotId);")
+    L("        }")
+    L("    } catch(e) { alert('Delete failed: ' + e); }")
+    L("}")
+    L("async function deleteBatch(batchId) {")
+    L("    if (!confirm('Delete batch ' + batchId + ' and unlink sub-targets?')) return;")
+    L("    var oldEvalReports = document.getElementById('eval-reports-under'); if(oldEvalReports) oldEvalReports.remove();")
+    L("    try {")
+    L("        var res = await fetch('/api/batches/' + encodeURIComponent(batchId), {method: 'DELETE'});")
+    L("        if (res.ok) {")
+    L("            var evals = await fetch('/api/evaluations').then(function(r){return r.json();});")
+    L("            renderEvalList(evals);")
+    L("            setMode('eval');")
+    L("        } else {")
+    L("            alert('Failed to delete batch: ' + batchId);")
+    L("        }")
+    L("    } catch(e) { alert('Delete batch failed: ' + e); }")
+    L("}")
+    L("window.deleteEval = deleteEval;")
+    L("window.deleteBatch = deleteBatch;")
+
+    L("// Updated btn-eval-back: handles both batch and eval return")
+    L("document.getElementById(\'btn-eval-back\').onclick = function() {")
+    L("    if (activeBatchId) {")
+    L("        activeBatchId = null;")
+    L("        currentBatchData = null;")
+    L("        currentBatchSubTargets = [];")
+    L("        document.querySelectorAll(\'#eval-list .report-item\').forEach(function(i) {")
+    L("            i.style.display = \'\';")
+    L("            i.classList.remove(\'active\');")
+    L("        });")
+    L("        var oldSubs = document.querySelectorAll(\'.sub-target-item\');")
+    L("        oldSubs.forEach(function(s) { s.remove(); });")
+    L("        document.getElementById(\'btn-eval-back\').textContent = \'返回列表\';")
+    L("        renderEvalTable([], []);")
+    L("        document.getElementById(\'preview-panel\').classList.add(\'hidden\');")
+    L("    } else {")
+    L("        activeEvalId = null;")
+    L("        document.querySelectorAll(\'#eval-list .report-item\').forEach(function(i) {")
+    L("            i.style.display = \'\';")
+    L("            i.classList.remove(\'active\');")
+    L("        });")
+    L("        document.getElementById(\'eval-back-container\').style.display = \'none\';")
+    L("        var reportsDiv = document.getElementById(\'eval-reports-under\');")
+    L("        if (reportsDiv) { reportsDiv.remove(); }")
+    L("        renderEvalTable([], []);")
+    L("    }")
+    L("};")
 
     
     
     
-    L("function renderEvalTable(structures){var tbody=document.getElementById('table-body');tbody.setAttribute('data-eval-table','true');document.getElementById('eval-entry-count').textContent=structures.length+' PDB structures';if(!structures.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No PDB structures</div></td></tr>\";return;}var html=[];for(var i=0;i<structures.length;i++){var s=structures[i];var pdbId=typeof s==='string'?s:(s.pdb_id||'');var method=typeof s==='string'?'':(s.method||'');var res=typeof s==='string'?null:s.resolution;var title=typeof s==='string'?'':(s.title||'');var releaseDate=typeof s==='string'?'':(s.release_date||'');var ligand=typeof s==='string'?'':(s.ligand||s.ligands||'');var journalIf=typeof s==='string'?null:(s.journal_if||s.if||null);var ifTier=typeof s==='string'?'':(s.if_tier||'');var journal=typeof s==='string'?'':(s.journal||'');var bClass='badge-oth',mLabel=method;var mLower=method.toLowerCase();if(/electron crystallography/i.test(mLower)){bClass='badge-em';mLabel='ELECTRON CRYSTALLOGRAPHY';}else if(/electron microscopy|cryo/i.test(mLower)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(mLower)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(mLower)){bClass='badge-nmr';mLabel='NMR';}var rClass='res-mid',rStr='-';if(res!=null&&!isNaN(res)&&res>0){rClass=res<=2.0?'res-good':res>3.5?'res-poor':'res-mid';rStr=Number(res).toFixed(2);}var tierBadge=(ifTier&&ifTier!=='unknown')?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifNum=parseFloat(journalIf);var hasValidIf=journalIf!=null&&String(journalIf).trim()!==''&&String(journalIf).toLowerCase()!=='unknown'&&!isNaN(ifNum)&&ifNum>0;var ifVal=hasValidIf?\" <span class='if-val'>IF \"+ifNum.toFixed(1)+\"</span>\":\" <span class='if-val'>To be published</span>\";var ligs=ligand?(ligand.split(/;/).map(function(l){var trimmed=l.trim();var colonIdx=trimmed.indexOf(':');return colonIdx>0?trimmed.substring(0,colonIdx):trimmed;}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+(s._origIdx!=null?s._origIdx:i)+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join('');}var titleShort=title.substring(0,80);html.push(\"<tr><td><span class='pdb-link' data-idx='\"+(s._origIdx!=null?s._origIdx:i)+\"' data-pdb='\"+escHtml(pdbId)+\"' style='font-family:var(--mono);font-weight:700;color:var(--primary);cursor:pointer;font-size:12px;'>\"+escHtml(pdbId)+\"</span></td><td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td><td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td><td>\"+tierBadge+ifVal+\"</td><td class='title-cell' title='\"+escHtml(title)+\"'>\"+escHtml(titleShort||'-')+\"</td><td>\"+(releaseDate||'-')+\"</td><td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}tbody.innerHTML=html.join('');}")
+    L("function renderEvalTable(structures,blastResults){var tbody=document.getElementById('table-body');tbody.setAttribute('data-eval-table','true');var allStructuresForLookup=[];var blastMap={};if(blastResults&&blastResults.length){for(var i=0;i<blastResults.length;i++){var b=blastResults[i];if(b.pdb_id){blastMap[b.pdb_id.toUpperCase()]=b;}}}var totalCount=structures.length+Object.keys(blastMap).length;document.getElementById('eval-entry-count').textContent=totalCount+' PDB structures';if(!structures.length&&!blastResults.length){tbody.innerHTML=\"<tr><td colspan='7'><div class='preview-empty'><div class='preview-empty-icon'>&#128269;</div>No PDB structures</div></td></tr>\";return;}var html=[];var idxCounter=0;for(var i=0;i<structures.length;i++){var s=structures[i];s._origIdx=idxCounter++;allStructuresForLookup.push(s);var pdbId=typeof s==='string'?s:(s.pdb_id||'');var method=typeof s==='string'?'':(s.method||'');var res=typeof s==='string'?null:s.resolution;var title=typeof s==='string'?'':(s.title||'');var releaseDate=typeof s==='string'?'':(s.release_date||'');var ligand=typeof s==='string'?'':(s.ligand||s.ligands||'');var journalIf=typeof s==='string'?null:(s.journal_if||s.if||null);var ifTier=typeof s==='string'?'':(s.if_tier||'');var journal=typeof s==='string'?'':(s.journal||'');var bClass='badge-oth',mLabel=method;var mLower=method.toLowerCase();if(/electron crystallography/i.test(mLower)){bClass='badge-em';mLabel='ELECTRON CRYSTALLOGRAPHY';}else if(/electron microscopy|cryo/i.test(mLower)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(mLower)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(mLower)){bClass='badge-nmr';mLabel='NMR';}var rClass='res-mid',rStr='-';if(res!=null&&!isNaN(res)&&res>0){rClass=res<=2.0?'res-good':res>3.5?'res-poor':'res-mid';rStr=Number(res).toFixed(2);}var tierBadge=(ifTier&&ifTier!=='unknown')?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifNum=parseFloat(journalIf);var hasValidIf=journalIf!=null&&String(journalIf).trim()!==''&&String(journalIf).toLowerCase()!=='unknown'&&!isNaN(ifNum)&&ifNum>0;var ifVal=hasValidIf?\" <span class='if-val'>IF \"+ifNum.toFixed(1)+\"</span>\":\" <span class='if-val'>To be published</span>\";var ligs=ligand?(ligand.split(/[;|,]/).map(function(l){var trimmed=l.trim();var colonIdx=trimmed.indexOf(':');return colonIdx>0?trimmed.substring(0,colonIdx):trimmed;}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+s._origIdx+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join(' ');}var titleShort=title.substring(0,80);html.push(\"<tr><td><span class='pdb-link' data-idx='\"+s._origIdx+\"' data-pdb='\"+escHtml(pdbId)+\"' style='font-family:var(--mono);font-weight:700;color:var(--primary);cursor:pointer;font-size:12px;'>\"+escHtml(pdbId)+\"</span></td><td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td><td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td><td>\"+tierBadge+ifVal+\"</td><td class='title-cell' title='\"+escHtml(title)+\"'>\"+escHtml(titleShort||'-')+\"</td><td>\"+(releaseDate||'-')+\"</td><td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}if(blastResults&&blastResults.length){for(var j=0;j<blastResults.length;j++){var b=blastResults[j];b._origIdx=idxCounter++;allStructuresForLookup.push(b);var pdbId=b.pdb_id||'';if(!pdbId)continue;var method=b.method||'';var res=b.resolution||null;var title=b.title||b.description||'';var releaseDate=b.release_date||'';var ligand=b.ligand||b.ligands||'';var journalIf=b.journal_if||b.if||null;var ifTier=b.if_tier||'';var bClass='badge-oth',mLabel=method;var mLower=method.toLowerCase();if(/electron crystallography/i.test(mLower)){bClass='badge-em';mLabel='ELECTRON CRYSTALLOGRAPHY';}else if(/electron microscopy|cryo/i.test(mLower)){bClass='badge-em';mLabel='Cryo-EM';}else if(/x-ray/i.test(mLower)){bClass='badge-xr';mLabel='X-ray';}else if(/nmr/i.test(mLower)){bClass='badge-nmr';mLabel='NMR';}var rClass='res-mid',rStr='-';if(res!=null&&!isNaN(res)&&res>0){rClass=res<=2.0?'res-good':res>3.5?'res-poor':'res-mid';rStr=Number(res).toFixed(2);}var tierBadge=(ifTier&&ifTier!=='unknown')?\"<span class='if-badge tier-\"+ifTier+\"'>\"+ifTier.toUpperCase()+\"</span>\":'';var ifNum=parseFloat(journalIf);var hasValidIf=journalIf!=null&&String(journalIf).trim()!==''&&String(journalIf).toLowerCase()!=='unknown'&&!isNaN(ifNum)&&ifNum>0;var ifVal=hasValidIf?\" <span class='if-val'>IF \"+ifNum.toFixed(1)+\"</span>\":\" <span class='if-val'>To be published</span>\";var ligs=ligand?(ligand.split(/[;|,]/).map(function(l){var trimmed=l.trim();var colonIdx=trimmed.indexOf(':');return colonIdx>0?trimmed.substring(0,colonIdx):trimmed;}).filter(Boolean)):[];var ligHtml='-';if(ligs.length){var chips=[];for(var li=0;li<ligs.length;li++){chips.push(\"<span class='lig-chip' data-lig='\"+escHtml(ligs[li])+\"' data-idx='\"+b._origIdx+\"'>\"+escHtml(ligs[li])+\"</span>\");}ligHtml=chips.join(' ');}var identityRaw=b.identity||0;var identityPct=b.query_coverage>0?Math.round((identityRaw/b.query_coverage)*100):identityRaw;var identity=identityPct>100?100:identityPct;var evalue=b.evalue!=null?b.evalue.toExponential(1):'-';var qcov=b.query_coverage||0;var seqLen=currentEvalData&&currentEvalData.uniprot?currentEvalData.uniprot.sequence_length:0;var covPercent=seqLen>0?Math.round((qcov/seqLen)*100)+'%':'N/A';var badgeDataAttrs=\"data-blast-pdb='\"+escHtml(pdbId)+\"' data-identity='\"+identity+\"' data-evalue='\"+b.evalue+\"' data-qcov='\"+qcov+\"' data-seq-len='\"+seqLen+\"' data-method='\"+escHtml(method)+\"' data-res='\"+(res||'')+\"' data-title='\"+escHtml(title)+\"'\";html.push(\"<tr class='blast-row'><td><span class='pdb-link blast-homolog-link' data-idx='\"+b._origIdx+\"' data-pdb='\"+escHtml(pdbId)+\"' style='font-family:var(--mono);font-weight:700;color:var(--secondary);cursor:pointer;font-size:12px;'>\"+escHtml(pdbId)+\"</span> <span class='homolog-badge' \"+badgeDataAttrs+\">Homolog</span></td><td><span class='method-badge \"+bClass+\"'>\"+escHtml(mLabel)+\"</span></td><td><span class='res \"+rClass+\"'>\"+(rStr!=='-'?rStr+' A':'-')+\"</span></td><td>\"+tierBadge+ifVal+\"</td><td class='title-cell' title='\"+escHtml(title)+\"'>\"+escHtml(title.substring(0,80))+\"</td><td>\"+(releaseDate||'-')+\"</td><td class='lig-cell'>\"+ligHtml+\"</td></tr>\");}}currentEvalStructures=allStructuresForLookup;tbody.innerHTML=html.join('');}")
 
 
 
@@ -239,10 +630,10 @@ def write_js():
     L("function sortEvalStructures(arr){var copy=arr.slice();for(var si=0;si<copy.length;si++){if(copy[si]._origIdx==null)copy[si]._origIdx=si;}return copy.sort(function(a,b){var col=sortCol;var av=a[col],bv=b[col];if(col==='journal_if'||col==='if'){av=(av==null||String(av).trim()===''||String(av).toLowerCase()==='unknown')?0:parseFloat(av);bv=(bv==null||String(bv).trim()===''||String(bv).toLowerCase()==='unknown')?0:parseFloat(bv);return sortAsc?(av-bv):(bv-av);}if(col==='resolution'){av=(av==null||String(av).trim()===''||isNaN(parseFloat(av)))?999:parseFloat(av);bv=(bv==null||String(bv).trim()===''||isNaN(parseFloat(bv)))?999:parseFloat(bv);return sortAsc?(av-bv):(bv-av);}var an=parseFloat(av),bn=parseFloat(bv);var aNum=(av!=null&&String(av).trim()!==''&&!isNaN(an));var bNum=(bv!=null&&String(bv).trim()!==''&&!isNaN(bn));var cmp;if(aNum&&bNum){cmp=an-bn;}else if(aNum){cmp=-1;}else if(bNum){cmp=1;}else{cmp=String(av||'').localeCompare(String(bv||''));}return sortAsc?cmp:-cmp;});}")
     L("document.getElementById('btn-mode-weekly').onclick=function(){setMode('weekly');};")
     L("document.getElementById('btn-mode-eval').onclick=function(){setMode('eval');};")
-    L("document.getElementById('btn-eval-back').onclick=function(){activeEvalId=null;document.querySelectorAll('#eval-list .report-item').forEach(function(i){i.style.display='';i.classList.remove('active');});document.getElementById('eval-back-container').style.display='none';var reportsDiv=document.getElementById('eval-reports-under');if(reportsDiv){reportsDiv.remove();}renderEvalTable([]);};")
     L("var activeEvalMethod='all';var activeEvalPdbSearch='';var filteredEvalStructures=[];")
     L("function filterEvalStructures(){if(!currentEvalStructures)return [];var filtered=currentEvalStructures.slice();if(activeEvalMethod!=='all'){filtered=filtered.filter(function(s){var m=(s.method||'').toLowerCase();if(activeEvalMethod==='cryoem')return /electron microscopy|cryo(?!.*crystallography)/i.test(m);if(activeEvalMethod==='electron_crystallography')return /electron crystallography/i.test(m);if(activeEvalMethod==='xray')return /x-ray|xray/i.test(m);if(activeEvalMethod==='nmr')return /nmr/i.test(m);return true;});}if(activeEvalPdbSearch){var q=activeEvalPdbSearch.toLowerCase();filtered=filtered.filter(function(s){var pdbId=(s.pdb_id||'').toLowerCase();var title=(s.title||'').toLowerCase();return pdbId.indexOf(q)>=0||title.indexOf(q)>=0;});}return filtered;}")
-    L("function applyEvalFilters(){filteredEvalStructures=filterEvalStructures();renderEvalTable(filteredEvalStructures);}")
+    L("function renderBlastHomologs(blastResults){\nvar section=document.getElementById('blast-homologs-section');\nif(!blastResults||!blastResults.length){section.classList.remove('visible');section.innerHTML='';return;}\nsection.classList.add('visible');\nvar html='<div class=\"blast-section-header\">&#128279; \u540c\u6e90\u86cb\u767d (BLAST)<span class=\"blast-count-badge\">'+blastResults.length+'</span></div>';\nhtml+='<div class=\"blast-table-container\"><table class=\"blast-table\"><thead><tr><th>PDB</th><th>Method</th><th>Res</th><th>IF</th><th>Identity</th><th>E-value</th><th>Description</th></tr></thead><tbody>';\nfor(var i=0;i<blastResults.length;i++){\nvar b=blastResults[i];\nvar pdbId=escHtml(b.pdb_id||'-');\nvar method=escHtml(b.method||'-');\nvar res=b.resolution!=null?b.resolution.toFixed(1)+' ':'-';\nvar jif=b.journal_if?'<span class=\"if-badge\">'+b.journal_if.toFixed(1)+'</span>':'-';\nvar identityRaw=b.identity||0;var identityPct=b.query_coverage>0?Math.round((identityRaw/b.query_coverage)*100):identityRaw;var identity=identityPct>100?100:identityPct;\nvar evalue=b.evalue!=null?b.evalue.toExponential(1):'-';\nvar desc=escHtml((b.title||b.title||b.description||'').substring(0,80));\nvar idClass=identity>=70?'high':identity>=40?'mid':'low';\nhtml+='<tr>';\nhtml+='<td><span class=\"blast-pdb-link\" data-pdb=\"'+pdbId+'\">'+pdbId+'</span> <span class=\"homolog-badge\">\u540c\u6e90</span></td>';\nhtml+='<td class=\"blast-method\">'+method+'</td>';\nhtml+='<td class=\"blast-res\">'+res+'</td>';\nhtml+='<td class=\"blast-if\">'+jif+'</td>';\nhtml+='<td><span class=\"blast-identity '+idClass+'\">'+identity+'</span></td>';\nhtml+='<td><span class=\"blast-evalue\">'+evalue+'</span></td>';\nhtml+='<td class=\"blast-desc\" title=\"'+escHtml(b.title||b.description||'')+'\">'+desc+'</td>';\nhtml+='</tr>';\n}\nhtml+='</tbody></table></div>';\nsection.innerHTML=html;\nsection.querySelectorAll('.blast-pdb-link').forEach(function(el){el.onclick=function(){var pdb=el.getAttribute('data-pdb');if(pdb)showPdbPreview(pdb);};});\n}");
+    L("function applyEvalFilters(){filteredEvalStructures=filterEvalStructures();renderEvalTable(filteredEvalStructures,currentBlastResults);}")
     L("document.getElementById('sel-eval-main-method').onchange=function(){activeEvalMethod=this.value;applyEvalFilters();};")
     L("document.getElementById('btn-eval-main-search').onclick=function(){activeEvalPdbSearch=document.getElementById('inp-eval-search').value.trim();applyEvalFilters();};")
     L("document.getElementById('inp-eval-search').onkeydown=function(e){if(e.key==='Enter'){activeEvalPdbSearch=this.value.trim();applyEvalFilters();}};")
@@ -252,8 +643,6 @@ def write_js():
     L("init().then(function(){setMode('weekly');});")
     L("})();")
 
-    from pathlib import Path
-    SCRIPT_DIR = Path("/tmp/pdb_scripts")
     with open(SCRIPT_DIR / "pdb_app.js", 'w', encoding='utf-8') as f:
         f.writelines(lines)
 
@@ -400,6 +789,37 @@ def get_eval_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def _migrate_blast_results_table(conn):
+    """Add missing columns to evaluation_blast_results table if they don't exist."""
+    try:
+        cursor = conn.execute("PRAGMA table_info(evaluation_blast_results)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+
+        columns_to_add = [
+            ('target_coverage', 'INTEGER'),
+            ('method', 'TEXT DEFAULT ""'),
+            ('resolution', 'REAL'),
+            ('release_date', 'TEXT DEFAULT ""'),
+            ('journal', 'TEXT DEFAULT ""'),
+            ('journal_if', 'REAL'),
+            ('if_tier', 'TEXT DEFAULT "unknown"'),
+            ('ligand', 'TEXT DEFAULT ""'),
+            ('title', 'TEXT DEFAULT ""'),
+        ]
+
+        for col_name, col_type in columns_to_add:
+            if col_name not in existing_cols:
+                try:
+                    conn.execute(f'ALTER TABLE evaluation_blast_results ADD COLUMN {col_name} {col_type}')
+                    logging.info(f'[_migrate_blast_results_table] Added column: {col_name}')
+                except Exception as e:
+                    logging.warning(f'[_migrate_blast_results_table] Failed to add {col_name}: {e}')
+    except Exception as e:
+        logging.error(f'[_migrate_blast_results_table] Migration error: {e}')
+
+
+
 def init_eval_db():
     """Create evaluation tables if they don't exist."""
     conn = get_eval_db()
@@ -449,6 +869,73 @@ def init_eval_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_pdb
         ON evaluation_pdb_structures(uniprot_id, pdb_id)
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS evaluation_blast_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uniprot_id TEXT NOT NULL,
+            pdb_id TEXT,
+            uniprot_ref TEXT,
+            description TEXT,
+            identity INTEGER,
+            evalue REAL,
+            query_coverage INTEGER,
+            target_coverage INTEGER,
+            method TEXT DEFAULT '',
+            resolution REAL,
+            release_date TEXT DEFAULT '',
+            source TEXT,
+            taxonomy_id INTEGER,
+            journal TEXT DEFAULT '',
+            journal_if REAL,
+            if_tier TEXT DEFAULT 'unknown',
+            ligand TEXT DEFAULT '',
+            updated_at TEXT,
+            FOREIGN KEY (uniprot_id) REFERENCES evaluations(uniprot_id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_eval_blast_uniprot
+        ON evaluation_blast_results(uniprot_id)
+    """)
+
+    # evaluation_batches table: groups multiple evaluations under one batch
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS evaluation_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT UNIQUE,
+            title TEXT DEFAULT '',
+            combined_report TEXT DEFAULT '',
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        )
+    """)
+
+    # Migrate: add batch_id column to evaluations if it doesn't exist
+    try:
+        cursor = conn.execute("PRAGMA table_info(evaluations)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        if 'batch_id' not in existing_cols:
+            conn.execute('ALTER TABLE evaluations ADD COLUMN batch_id TEXT')
+            logging.info('[init_eval_db] Added batch_id column to evaluations')
+    except Exception as e:
+        logging.warning(f'[init_eval_db] batch_id migration error: {e}')
+
+    # Migrate: add combined_report column to evaluation_batches if doesn't exist
+    try:
+        cursor = conn.execute("PRAGMA table_info(evaluation_batches)")
+        batch_cols = {row[1] for row in cursor.fetchall()}
+        if 'combined_report' not in batch_cols:
+            conn.execute('ALTER TABLE evaluation_batches ADD COLUMN combined_report TEXT DEFAULT ""')
+            logging.info('[init_eval_db] Added combined_report column to evaluation_batches')
+    except Exception as e:
+        logging.warning(f'[init_eval_db] combined_report migration error: {e}')
+
+    # Migrate: add batch_id index
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_evaluations_batch ON evaluations(batch_id)")
+
+    # Migrate: add missing columns to evaluation_blast_results if they don't exist
+    _migrate_blast_results_table(conn)
+
     conn.commit()
     conn.close()
 
@@ -726,6 +1213,19 @@ JOURNAL_IF_MAP = {
     'Nat. Biotechnol.': 33.2,
     'Nature Biotechnology': 33.2,
     'Science Advances': 11.7,
+    'Pnas Nexus': 8.0,
+    'Cancer Discov': 29.1,
+    'Cancer Discovery': 29.1,
+    'Cell Rep': 8.8,
+    'Cell Reports': 8.8,
+    'Cell Death Dis': 8.1,
+    'Cell Death & Disease': 8.1,
+    'Protein Eng. Des. Sel.': 2.5,
+    'Protein Engineering, Design & Selection': 2.5,
+    'Acta Crystallogr. Sect. D': 2.3,
+    'Acs Chem. Biol.': 5.5,
+    'ACS Chemical Biology': 5.5,
+    'Structure': 4.4,
 }
 
 def get_journal_if(journal_name: str) -> float:
@@ -749,6 +1249,45 @@ def _eval_file(uniprot_id: str) -> Path:
     """JSON file path for an evaluation."""
     return EVAL_DATA_DIR / f"{uniprot_id}.json"
 
+def save_evaluation_report(uniprot_id: str, markdown_content: str, filename: str = None) -> bool:
+    """Save an LLM-generated evaluation report to the evaluation_reports table.
+    
+    Called automatically after report generation.
+    """
+    try:
+        if not filename:
+            protein_part = ''
+            try:
+                conn = get_eval_db()
+                row = conn.execute("SELECT protein_name FROM evaluations WHERE uniprot_id=?", (uniprot_id,)).fetchone()
+                conn.close()
+                if row and row[0]:
+                    pn = row[0]
+                    protein_part = '_' + re.sub(r'[^A-Za-z0-9]', '', pn[:20])
+            except:
+                pass
+            filename = f"{uniprot_id}{protein_part}_结构可行性评估.md"
+        
+        h1 = re.search(r'^#\s+(.+)$', markdown_content, re.MULTILINE)
+        title = h1.group(1).strip() if h1 else f"{uniprot_id} 结构可行性评估报告"
+        
+        from datetime import datetime
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        
+        conn = get_eval_db()
+        conn.execute("""
+            INSERT OR REPLACE INTO evaluation_reports (uniprot_id, title, filename, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (uniprot_id, title, filename, markdown_content, now))
+        conn.commit()
+        conn.close()
+        logging.info(f"[save_evaluation_report] saved report for {uniprot_id}")
+        return True
+    except Exception as e:
+        logging.error(f"[save_evaluation_report] error: {e}")
+        return False
+
+
 def save_evaluation(result: dict) -> bool:
     """Save evaluation result to SQLite DB (primary) and JSON file (backup)."""
     try:
@@ -769,11 +1308,12 @@ def save_evaluation(result: dict) -> bool:
 
         # --- Write to SQLite ---
         conn = get_eval_db()
+        batch_id = result.get('batch_id', '') or ''
         conn.execute("""
             INSERT OR REPLACE INTO evaluations
             (uniprot_id, entry_name, protein_name, gene_names, organism, sequence_length,
-             coverage, scores, report, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             coverage, scores, report, created_at, updated_at, batch_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             uniprot_id,
             uniprot.get('entry_name', '') or result.get('entry_name', ''),
@@ -786,6 +1326,7 @@ def save_evaluation(result: dict) -> bool:
             result.get('report', ''),
             result.get('created_at', now),
             now,
+            batch_id,
         ))
 
         # Delete old PDB structures within the same transaction
@@ -834,6 +1375,52 @@ def save_evaluation(result: dict) -> bool:
             """, (uniprot_id, pdb_id, method, resolution, title, deposition_date,
                   release_date, ligand, journal, journal_if, is_cryoem, is_xray, is_nmr, if_tier, now))
 
+        # Save BLAST results
+        blast_list = result.get('blast_results', []) or []
+        for b in blast_list:
+            pdb_id_bl = b.get('pdb_id') or None
+            uniprot_ref = b.get('uniprot_id') or None
+            if not pdb_id_bl and not uniprot_ref:
+                continue
+
+            # Calculate IF tier
+            b_jif = b.get('journal_if') or 0
+            if b_jif and b_jif > 0:
+                if b_jif >= 20: b_if_tier = 'top'
+                elif b_jif >= 10: b_if_tier = 'high'
+                elif b_jif >= 5: b_if_tier = 'mid'
+                else: b_if_tier = 'low'
+            else:
+                b_if_tier = 'unknown'
+
+            conn.execute("""
+                INSERT INTO evaluation_blast_results
+                (uniprot_id, pdb_id, uniprot_ref, description, title, identity, evalue,
+                 query_coverage, target_coverage, method, resolution, release_date, source, taxonomy_id,
+                 journal, journal_if, if_tier, ligand, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                uniprot_id,
+                pdb_id_bl,
+                uniprot_ref,
+                b.get('description', ''),
+                b.get('title', ''),
+                b.get('identity'),
+                b.get('evalue'),
+                b.get('query_coverage'),
+                b.get('target_coverage', b.get('query_coverage')),
+                b.get('method', ''),
+                b.get('resolution'),
+                b.get('release_date', ''),
+                b.get('source', ''),
+                b.get('taxonomy_id'),
+                b.get('journal', ''),
+                b.get('journal_if'),
+                b_if_tier,
+                b.get('ligand', ''),
+                now,
+            ))
+
         conn.commit()
         conn.close()
 
@@ -869,7 +1456,6 @@ def load_evaluation(uniprot_id: str) -> dict:
                 "SELECT * FROM evaluation_pdb_structures WHERE uniprot_id = ? ORDER BY pdb_id",
                 (uniprot_id,)
             ).fetchall()
-            conn2.close()
 
             pdb_structures = []
             for pr in pdb_rows:
@@ -887,6 +1473,39 @@ def load_evaluation(uniprot_id: str) -> dict:
                     'journal_if': pd['journal_if'],
                     'if_tier': pd.get('if_tier') or 'unknown',
                 })
+
+            # Load BLAST homolog results from DB
+            blast_results = []
+            blast_rows = conn2.execute(
+                "SELECT * FROM evaluation_blast_results WHERE uniprot_id = ? ORDER BY identity DESC",
+                (uniprot_id,)
+            ).fetchall()
+            for br in blast_rows:
+                bd = dict(br)
+                blast_results.append({
+                    'pdb_id': bd['pdb_id'] or '',
+                    'uniprot_id': bd['uniprot_ref'] or '',
+                    'description': bd['description'] or '',
+                    'title': bd.get('title') or bd.get('description') or '',
+                    'identity': bd['identity'],
+                    'evalue': bd['evalue'],
+                    'query_coverage': bd['query_coverage'],
+                    'target_coverage': bd.get('target_coverage') or bd.get('query_coverage') or 0,
+                    'method': bd.get('method', ''),
+                    'resolution': bd.get('resolution'),
+                    'release_date': bd.get('release_date', ''),
+                    'source': bd['source'] or 'BLAST',
+                    'taxonomy_id': bd['taxonomy_id'],
+                    'journal': bd.get('journal', ''),
+                    'journal_if': bd.get('journal_if'),
+                    'if_tier': bd.get('if_tier') or 'unknown',
+                    'ligand': bd.get('ligand') or bd.get('ligands') or '',
+                    'is_homolog': True,
+                })
+            conn2.close()
+
+            # Enrich BLAST results with full PDB structure info
+            blast_results = _enrich_blast_results(blast_results)
 
             gene_list = rd['gene_names'].split(', ') if rd.get('gene_names') else []
             uniprot_block = {
@@ -911,6 +1530,11 @@ def load_evaluation(uniprot_id: str) -> dict:
                 else:
                     scores_normalized[k] = v
 
+            # Filter BLAST results: remove PDBs already in direct structures
+            existing_pdb_ids = set(s.get('pdb_id', '').upper() for s in pdb_structures)
+            filtered_blast = [b for b in blast_results if b.get('pdb_id', '').upper() not in existing_pdb_ids]
+            blast_results = filtered_blast
+
             return {
                 'uniprot': uniprot_block,
                 'uniprot_id': rd['uniprot_id'],
@@ -920,7 +1544,7 @@ def load_evaluation(uniprot_id: str) -> dict:
                 'organism': rd.get('organism', ''),
                 'sequence_length': rd.get('sequence_length') or 0,
                 'pdb_structures': pdb_structures,
-                'blast_results': [],
+                'blast_results': blast_results,
                 'coverage': rd.get('coverage') or 0,
                 'scores': scores_normalized,
                 'report': rd.get('report') or '',
@@ -968,36 +1592,88 @@ def _normalize_scores(raw: dict) -> dict:
     return normalized
 
 def list_evaluations(search: str = "") -> list:
-    """List all saved evaluations from SQLite, with optional search filter."""
+    """List all saved evaluations and batch groups from SQLite, with optional search filter.
+    Returns a mixed list where batch entries have is_batch:true and individual entries have is_batch:false.
+    """
     import json as _json
     try:
         conn = get_eval_db()
+
+        # --- Fetch all batches ---
+        batch_rows = conn.execute("""
+            SELECT b.*,
+                   COUNT(e.uniprot_id) as sub_target_count,
+                   MAX(e.created_at) as latest_sub_created
+            FROM evaluation_batches b
+            LEFT JOIN evaluations e ON e.batch_id = b.batch_id
+            GROUP BY b.batch_id
+            ORDER BY b.created_at DESC
+        """).fetchall()
+
+        # --- Fetch all evaluations ---
         if search:
             q = f"%{search}%"
-            rows = conn.execute("""
+            eval_rows = conn.execute("""
                 SELECT e.*, COUNT(p.pdb_id) as pdb_count
                 FROM evaluations e
                 LEFT JOIN evaluation_pdb_structures p ON e.uniprot_id = p.uniprot_id
-                WHERE e.uniprot_id LIKE ? OR e.protein_name LIKE ? OR e.gene_names LIKE ? OR e.organism LIKE ?
+                WHERE e.batch_id IS NULL
+                  AND (e.uniprot_id LIKE ? OR e.protein_name LIKE ? OR e.gene_names LIKE ? OR e.organism LIKE ?)
                 GROUP BY e.uniprot_id
                 ORDER BY e.created_at DESC
             """, (q, q, q, q)).fetchall()
         else:
-            rows = conn.execute("""
+            eval_rows = conn.execute("""
                 SELECT e.*, COUNT(p.pdb_id) as pdb_count
                 FROM evaluations e
                 LEFT JOIN evaluation_pdb_structures p ON e.uniprot_id = p.uniprot_id
+                WHERE e.batch_id IS NULL
                 GROUP BY e.uniprot_id
                 ORDER BY e.created_at DESC
             """).fetchall()
         conn.close()
 
         results = []
-        for row in rows:
+
+        # Add batch entries first
+        for row in batch_rows:
+            rd = dict(row)
+            # Compute aggregate scores across sub-targets
+            if rd.get('batch_id'):
+                conn2 = get_eval_db()
+                sub_rows = conn2.execute(
+                    "SELECT scores FROM evaluations WHERE batch_id = ?", (rd['batch_id'],)
+                ).fetchall()
+                conn2.close()
+            else:
+                sub_rows = []
+            best_score = 0
+            for sr in sub_rows:
+                try:
+                    sc = _json.loads(sr[0] or '{}')
+                    for v in sc.values():
+                        if isinstance(v, dict) and v.get('score', 0) > best_score:
+                            best_score = v['score']
+                except:
+                    pass
+            score_color = 'var(--success)' if best_score >= 7 else 'var(--accent)' if best_score >= 5 else 'var(--danger)'
+            results.append({
+                'is_batch': True,
+                'batch_id': rd.get('batch_id') or '',
+                'title': rd.get('title') or rd.get('batch_id') or 'Batch',
+                'sub_target_count': rd.get('sub_target_count') or 0,
+                'combined_report': rd.get('combined_report') or '',
+                'best_score': best_score,
+                'score_color': score_color,
+                'created': rd.get('created_at') or rd.get('latest_sub_created') or '',
+            })
+
+        # Add individual (non-batch) evaluation entries
+        for row in eval_rows:
             rd = dict(row)
             gene_str = rd.get('gene_names') or ''
-            gene_list = gene_str.split(', ') if gene_str else []
             results.append({
+                'is_batch': False,
                 'uniprot_id': rd['uniprot_id'],
                 'protein_name': rd.get('protein_name') or '',
                 'gene_name': gene_str,
@@ -1008,7 +1684,7 @@ def list_evaluations(search: str = "") -> list:
                 'created': rd.get('created_at') or '',
             })
 
-        logging.info(f"[list_evaluations] search='{search}' returning {len(results)} results")
+        logging.info(f"[list_evaluations] search='{search}' returning {len(results)} results ({len(batch_rows)} batches + {len(eval_rows)} individual)")
         return results
     except Exception as e:
         logging.error(f"[list_evaluations] error: {e}")
@@ -1027,7 +1703,117 @@ def _get_session():
         http_session = s
     return http_session
 
-def evaluate_uniprot(uniprot_id: str) -> dict:
+
+# ─── NCBI BLAST via curl (synchronous, reliable) ───────────────────────────
+
+def _ncbi_blast_search(sequence: str, max_wait: int = 300) -> list:
+    """
+    Run NCBI BLASTp search using sequence, return list of homolog PDB structures.
+    Uses curl subprocess to avoid SSL issues.
+    """
+    import urllib.parse
+    logger.info(f"[NCBI BLAST] Submitting job for sequence length {len(sequence)}")
+    # Submit job
+    query_params = urllib.parse.urlencode({
+        'CMD': 'Put',
+        'QUERY': sequence[:10000],
+        'DATABASE': 'pdb',
+        'PROGRAM': 'blastp',
+        'EXPECT': '0.01',
+        'HITLIST_SIZE': '50',
+        'FILTER': 'L',
+        'FORMAT_TYPE': 'XML'
+    })
+    cmd = [
+        'curl', '-s', '--connect-timeout', '30', '--max-time', '90',
+        '-X', 'POST', '-d', query_params,
+        'https://blast.ncbi.nlm.nih.gov/blast/Blast.cgi'
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=95)
+    if result.returncode != 0:
+        logger.error(f"[NCBI BLAST] submission failed: {result.stderr}")
+        return []
+    rid_match = re.search(r'RID = (\w+)', result.stdout)
+    if not rid_match:
+        logger.error(f"[NCBI BLAST] No RID found in response: {result.stdout[:300]}")
+        return []
+    job_id = rid_match.group(1)
+    logger.info(f"[NCBI BLAST] Job submitted, RID={job_id}")
+    # Poll for completion
+    start_time = time.time()
+    check_interval = 10
+    while time.time() - start_time < max_wait:
+        cmd2 = [
+            'curl', '-s', '--connect-timeout', '30', '--max-time', '60',
+            f'https://blast.ncbi.nlm.nih.gov/blast/Blast.cgi?CMD=Get&FORMAT_OBJECT=Status&RID={job_id}'
+        ]
+        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=65)
+        if 'Status=READY' in r2.stdout:
+            logger.info(f"[NCBI BLAST] Job {job_id} ready")
+            break
+        elif 'Status=WAITING' in r2.stdout or 'Status=UNKNOWN' in r2.stdout:
+            logger.info(f"[NCBI BLAST] still running... ({int(time.time() - start_time)}s)")
+            time.sleep(check_interval)
+        else:
+            if 'ERROR' in r2.stdout[:300] or 'FAILED' in r2.stdout[:300]:
+                logger.error(f"[NCBI BLAST] error response: {r2.stdout[:300]}")
+                return []
+            time.sleep(check_interval)
+    else:
+        logger.warning(f"[NCBI BLAST] timeout after {max_wait}s")
+        return []
+    # Fetch XML results
+    cmd3 = [
+        'curl', '-s', '--connect-timeout', '30', '--max-time', '120',
+        f'https://blast.ncbi.nlm.nih.gov/blast/Blast.cgi?CMD=Get&FORMAT_TYPE=XML&RID={job_id}'
+    ]
+    r3 = subprocess.run(cmd3, capture_output=True, text=True, timeout=125)
+    xml = r3.stdout
+    # Parse XML
+    homologs = []
+    try:
+        hit_pattern = r'<Hit>.*?</Hit>'
+        hits = re.findall(hit_pattern, xml, re.DOTALL)
+        for hit in hits:
+            hsp_pattern = r'<Hit_id>.*?<Hit_def>(.*?)</Hit_def>'
+            m = re.search(hsp_pattern, hit, re.DOTALL)
+            if not m:
+                continue
+            hit_def = m.group(1)
+            pdb_m = re.search(r'pdb\|(\w+)\|', hit_def)
+            if not pdb_m:
+                continue
+            pdb_id = pdb_m.group(1).upper()
+            evalue_m = re.search(r'<Hsp_evalue>(.*?)</Hsp_evalue>', hit)
+            evalue = float(evalue_m.group(1)) if evalue_m else 1.0
+            # Get identity count and alignment length to calculate percentage
+            identity_m = re.search(r'<Hsp_identity>(\d+)</Hsp_identity>', hit)
+            identity_count = int(identity_m.group(1)) if identity_m else 0
+            align_len_m = re.search(r'<Hsp_align-len>(\d+)</Hsp_align-len>', hit)
+            align_len = int(align_len_m.group(1)) if align_len_m else 0
+            # Calculate identity percentage
+            identity = round((identity_count / align_len) * 100) if align_len > 0 else 0
+            # Clamp identity to max 100%
+            identity = min(identity, 100)
+            align_m = re.search(r'<Hsp_query-from>(\d+)</Hsp_query-from>.*?<Hsp_query-to>(\d+)</Hsp_query-to>', hit, re.DOTALL)
+            q_cov = (int(align_m.group(2)) - int(align_m.group(1)) + 1) if align_m else 0
+            desc = hit_def.split('|')[-1].strip() if '|' in hit_def else hit_def
+            homologs.append({
+                'pdb_id': pdb_id,
+                'description': desc[:200],
+                'evalue': evalue,
+                'identity': identity,
+                'query_coverage': q_cov,
+                'source': 'BLAST',
+                'is_homolog': True
+            })
+    except Exception as e:
+        logger.error(f"[NCBI BLAST] parse error: {e}")
+    logger.info(f"[NCBI BLAST] Found {len(homologs)} homologs")
+    return homologs
+
+
+def evaluate_uniprot(uniprot_id: str, force_blast: bool = False) -> dict:
     """Evaluate a UniProt ID: fetch UniProt + PDB data, run BLAST if no structures, generate report."""
     session = _get_session()
     result = {
@@ -1271,9 +2057,44 @@ def evaluate_uniprot(uniprot_id: str) -> dict:
             coverage = min(len(covered) / sequence_length * 100, 100)
         result['coverage'] = round(coverage, 1)
 
-        # BLAST search if poor coverage
+        # BLAST search: real NCBI BLAST when force_blast=True or when coverage/structures are poor
         blast_results = []
-        if (coverage < 50 or len(structures) < 5) and sequence_length > 0:
+        need_real_blast = force_blast or ((coverage < 50 or len(structures) < 5) and sequence_length > 0)
+        if need_real_blast:
+            # Try to get sequence for BLAST
+            try:
+                seq_url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
+                seq_resp = session.get(seq_url, timeout=30)
+                if seq_resp.status_code == 200:
+                    seq_lines = seq_resp.text.strip().split('\n')
+                    sequence = ''.join(seq_lines[1:])
+                    if sequence and len(sequence) > 10:
+                        real_blast = _ncbi_blast_search(sequence)
+                        if real_blast:
+                            # Enrich with UniProt metadata
+                            try:
+                                tax_url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}?format=json"
+                                tax_resp = session.get(tax_url, timeout=15)
+                                tax_id = None
+                                if tax_resp.status_code == 200:
+                                    tax_id = tax_resp.json().get('organism', {}).get('taxonId')
+                            except:
+                                tax_id = None
+                            for rb in real_blast:
+                                rb['taxonomy_id'] = tax_id
+                            blast_results = real_blast
+                            logger.info(f"[evaluate_uniprot] NCBI BLAST found {len(blast_results)} homologs")
+                        else:
+                            logger.warning("[evaluate_uniprot] NCBI BLAST returned no results, falling back to taxonomy search")
+                    else:
+                        logger.warning(f"[evaluate_uniprot] Could not parse sequence for {uniprot_id}")
+                else:
+                    logger.warning(f"[evaluate_uniprot] Could not fetch sequence for {uniprot_id}")
+            except Exception as e:
+                logger.error(f"[evaluate_uniprot] BLAST preparation error: {e}")
+
+        # Fallback: taxonomy-based search if no real BLAST results
+        if not blast_results and sequence_length > 0:
             taxonomy_id = None
             org_data = data.get('organism', {})
             if org_data:
@@ -1322,22 +2143,37 @@ def evaluate_uniprot(uniprot_id: str) -> dict:
                     pdb_resp = session.post(pdb_search_url, json=pdb_query, timeout=20)
                     if pdb_resp.status_code == 200:
                         pdb_data = pdb_resp.json()
-                        existing = set(r['uniprot_id'].lower() for r in blast_results)
+                        existing = set(r.get('pdb_id', '').lower() for r in blast_results)
                         for pdb_entry in pdb_data.get('result_set', {}).get('dbrefs', []):
                             pdb_id = pdb_entry.get('uid', '')
                             if pdb_id and pdb_id.lower() not in existing and pdb_id.upper() != uniprot_id.upper():
                                 blast_results.append({
-                                    'uniprot_id': pdb_id,
+                                    'pdb_id': pdb_id,
                                     'gene_name': '',
                                     'protein_name': f'PDB Structure {pdb_id}',
-                                    'organism': result['uniprot']['organism'] or 'Various'
+                                    'organism': result['uniprot']['organism'] or 'Various',
+                                    'source': 'PDB_taxonomy',
+                                    'is_homolog': True
                                 })
                                 if len(blast_results) >= 20:
                                     break
                 except Exception:
                     pass
 
-        result['blast_results'] = blast_results[:20]
+        # Filter out PDBs that are already in direct structures; mark remaining as homologs
+        existing_pdb_ids = set(s.get('pdb_id', '').upper() for s in structures)
+        filtered_blast = []
+        for b in blast_results:
+            b_pdb = b.get('pdb_id', '').upper()
+            if b_pdb and b_pdb not in existing_pdb_ids:
+                b['is_homolog'] = True
+                filtered_blast.append(b)
+
+        # Enrich BLAST results with full PDB details
+        logger.info(f"[evaluate_uniprot] Enriching {len(filtered_blast)} BLAST results with PDB details...")
+        filtered_blast = _enrich_blast_results(filtered_blast)
+
+        result['blast_results'] = filtered_blast[:20]
 
         # Scores first (needed for report)
         result['scores'] = _calculate_feasibility_scores(result)
@@ -1358,6 +2194,497 @@ def evaluate_uniprot(uniprot_id: str) -> dict:
         result['error'] = err_msg
 
     return result
+
+
+def _enrich_blast_results(blast_results: list, limit: int = None) -> list:
+    """Fetch full PDB structure details for BLAST homologs that lack method/resolution info.
+
+    Makes per-PDB calls to RCSB REST API v1 to get:
+    method, resolution, title, release_date, journal, doi, pubmed_id, journal_if.
+    Uses concurrent requests for faster loading.
+    """
+    if not blast_results:
+        return blast_results
+
+    # Find BLAST PDBs that need enrichment (no method/resolution)
+    needs_enrichment = []
+    for b in blast_results:
+        if not b.get('method') and b.get('pdb_id'):
+            needs_enrichment.append(b['pdb_id'].upper())
+
+    if not needs_enrichment:
+        return blast_results
+
+    # Limit if specified (to avoid excessive API calls)
+    if limit:
+        needs_enrichment = needs_enrichment[:limit]
+    logger.info(f"[enrich_blast] Enriching {len(needs_enrichment)} BLAST PDBs...")
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    session = _get_session()
+
+    def fetch_pdb_info(pid):
+        """Fetch PDB info for a single PDB ID."""
+        try:
+            url = f"https://data.rcsb.org/rest/v1/core/entry/{pid}"
+            resp = session.get(url, timeout=10)
+            if resp.status_code != 200:
+                logger.warning(f"[enrich_blast] {pid} returned {resp.status_code}")
+                return pid, None
+            return pid, resp.json()
+        except Exception as e:
+            logger.error(f"[enrich_blast] Error fetching {pid}: {e}")
+            return pid, None
+
+    # Fetch all PDB info concurrently
+    results = {}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_pid = {executor.submit(fetch_pdb_info, pid): pid for pid in needs_enrichment}
+        for future in as_completed(future_to_pid):
+            pid, data = future.result()
+            if data:
+                results[pid] = data
+
+    # Process results
+    for pid, data in results.items():
+        try:
+            # Extract method
+            method = ""
+            exptl = data.get('exptl', [])
+            if exptl:
+                method = exptl[0].get('method', '') or ''
+
+            # Extract resolution
+            resolution = None
+            rcsb_info = data.get('rcsb_entry_info', {})
+            if isinstance(rcsb_info, dict):
+                res_combined = rcsb_info.get('resolution_combined', [])
+                if res_combined:
+                    resolution = res_combined[0]
+
+            # Extract title
+            struct = data.get('struct', {})
+            title = struct.get('title', '') if isinstance(struct, dict) else ''
+
+            # Extract release_date (first revision = original release)
+            audit = data.get('pdbx_audit_revision_history', [])
+            if audit:
+                rd = audit[0].get('revision_date', '')
+                release_date = rd[:10] if rd else ''
+            else:
+                release_date = ''
+
+            # Extract journal info from citation
+            journal = ""
+            doi = ""
+            pubmed_id = ""
+            citations = data.get('citation', [])
+            primary_citation = None
+            for c in citations:
+                if c.get('rcsb_is_primary'):
+                    primary_citation = c
+                    break
+            if not primary_citation and citations:
+                primary_citation = citations[0]
+            if primary_citation:
+                journal = primary_citation.get('journal_abbrev', '') or ''
+                doi = primary_citation.get('pdbx_database_id_DOI', '') or ''
+                pubmed_id = str(primary_citation.get('pdbx_database_id_PubMed', '')) or ''
+
+            # Journal IF
+            journal_if = get_journal_if(journal) if journal else 0
+
+            # Extract ligands from nonpolymer_bound_components
+            nonpoly = data.get('rcsb_entry_info', {}).get('nonpolymer_bound_components', [])
+            ligand = ", ".join(sorted(set(nonpoly))) if nonpoly else ""
+
+            # Also try to get more detailed ligand info
+            try:
+                np_url = f"https://data.rcsb.org/rest/v1/core/nonpolymer_entity/{pid}/1"
+                np_resp = session.get(np_url, timeout=5)
+                if np_resp.status_code == 200:
+                    np_data = np_resp.json()
+                    entity_nonpoly = np_data.get('pdbx_entity_nonpoly', {})
+                    comp_id = entity_nonpoly.get('comp_id', '')
+                    if comp_id and len(comp_id) <= 5:
+                        if comp_id not in ['HOH', 'DOD', 'SO4', 'CL', 'NA', 'K', 'MG', 'CA', 'ZN', 'FE', 'CU', 'MN', 'CO',
+                                          'GOL', 'PEG', 'EDO', '1PE', '2PE', '3PE', '4PE', 'MLI', 'ACT', 'NH4', 'NO3',
+                                          'EPE', 'HEP', 'MES', 'TRS', 'TRIS', 'MPO', 'PGE', 'PG4', 'DMS', 'DMSO',
+                                          'IPA', 'BU1', 'BU2', 'BU3', 'MPD', 'PG6', '1PG', '2PG', 'XPE']:
+                            if ligand:
+                                ligand = comp_id + "; " + ligand
+                            else:
+                                ligand = comp_id
+            except Exception:
+                pass
+
+            # Calculate IF tier
+            if_tier = 'unknown'
+            if journal_if and journal_if > 0:
+                if journal_if >= 20:
+                    if_tier = 'top'
+                elif journal_if >= 10:
+                    if_tier = 'high'
+                elif journal_if >= 5:
+                    if_tier = 'mid'
+                else:
+                    if_tier = 'low'
+
+            # Update the BLAST result in-place
+            for b in blast_results:
+                if b.get('pdb_id', '').upper() == pid:
+                    b['method'] = method
+                    b['resolution'] = resolution
+                    b['title'] = title
+                    b['release_date'] = release_date
+                    b['journal'] = journal
+                    b['doi'] = doi
+                    b['pubmed_id'] = pubmed_id
+                    b['journal_if'] = journal_if
+                    b['if_tier'] = if_tier
+                    b['ligand'] = ligand
+                    b['ligands'] = ligand
+                    b['is_homolog'] = True
+                    logger.info(f"[enrich_blast] {pid}: method={method}, resolution={resolution}, if={journal_if}, ligands={ligand[:30] if ligand else 'None'}")
+                    break
+
+        except Exception as e:
+            logger.error(f"[enrich_blast] Error processing {pid}: {e}")
+
+    return blast_results
+
+
+
+
+def _build_llm_report_prompt(uniprot_id: str, uniprot_data: dict, structures: list, blast_results: list, coverage: float, scores: dict) -> str:
+    """Build a comprehensive prompt for LLM report generation."""
+    # Prepare structure data
+    xray = [s for s in structures if 'x-ray' in (s.get('method') or '').lower()]
+    cryoem = [s for s in structures if 'cryo' in (s.get('method') or '').lower() or 'electron' in (s.get('method') or '').lower()]
+    nmr = [s for s in structures if 'nmr' in (s.get('method') or '').lower()]
+    blast_xray = [b for b in blast_results if 'x-ray' in (b.get('method') or '').lower()]
+    blast_cryoem = [b for b in blast_results if 'cryo' in (b.get('method') or '').lower() or 'electron' in (b.get('method') or '').lower()]
+
+    res_vals = [s.get('resolution') for s in structures if s.get('resolution') is not None]
+    best_res = min(res_vals) if res_vals else None
+    blast_res = [b.get('resolution') for b in blast_results if b.get('resolution') is not None]
+    best_blast_res = min(blast_res) if blast_res else None
+
+    # Collect all ligands
+    all_ligands = []
+    for s in structures:
+        lig = s.get('ligand') or ''
+        if lig:
+            for l in lig.split(','):
+                l = l.strip()
+                if l: all_ligands.append(l)
+    for b in blast_results:
+        lig = b.get('ligand') or ''
+        if lig:
+            for l in lig.split(','):
+                l = l.strip()
+                if l: all_ligands.append(l)
+    ligand_summary = sorted(set(all_ligands)) if all_ligands else []
+
+    # Journal IF
+    jifs = []
+    for s in structures:
+        j = s.get('journal_if')
+        if j and j > 0: jifs.append(j)
+    for b in blast_results:
+        j = b.get('journal_if')
+        if j and j > 0: jifs.append(j)
+    avg_jif = sum(jifs)/len(jifs) if jifs else 0
+
+    prompt = f"""## 蛋白质结构可行性评估报告生成任务
+
+你是一位专业的结构生物学研究员。请根据以下数据，为蛋白质 **{uniprot_id}** ({uniprot_data.get('protein_name', 'N/A')}) 生成一份专业、详细的结构可行性评估报告。
+
+### 蛋白基本信息
+- **UniProt ID**: {uniprot_id}
+- **蛋白名称**: {uniprot_data.get('protein_name', 'N/A')}
+- **基因名**: {', '.join(uniprot_data.get('gene_names', []) or ['N/A'])}
+- **物种**: {uniprot_data.get('organism', 'N/A')}
+- **序列长度**: {uniprot_data.get('sequence_length', 0)} aa
+- **功能描述**: {uniprot_data.get('function', 'N/A')[:200] if uniprot_data.get('function') else 'N/A'}
+
+### 结构覆盖情况
+- **覆盖度**: {coverage:.1f}%
+- **直接关联PDB结构**: {len(structures)} 个
+- **BLAST同源蛋白**: {len(blast_results)} 个
+
+### 直接PDB结构详情
+"""
+    if structures:
+        prompt += "| PDB ID | 方法 | 分辨率 | 期刊 IF | 配体 | 发布日期 | 标题 |\n|--------|------|--------|---------|------|----------|------|\n"
+        for s in structures[:20]:
+            res = f"{s.get('resolution', 'N/A'):.2f}" if s.get('resolution') else "N/A"
+            jif = f"{s.get('journal_if', 'N/A'):.1f}" if s.get('journal_if') else "N/A"
+            title = (s.get('title') or '-')[:50]
+            prompt += f"| {s.get('pdb_id','N/A')} | {s.get('method','N/A')} | {res} Å | {jif} | {s.get('ligand','-')} | {s.get('release_date','N/A')} | {title} |\n"
+    else:
+        prompt += "*暂无直接关联的PDB结构*\n"
+
+    prompt += f"""
+### BLAST同源蛋白详情（{len(blast_results)} 个，按序列同一性排序）
+"""
+    if blast_results:
+        prompt += "| PDB ID | 方法 | 分辨率 | 期刊 IF | 配体 | 发布日期 | 序列同一性 | 来源物种 |\n|--------|------|--------|---------|------|----------|-----------|---------|\n"
+        for b in blast_results[:20]:
+            res = f"{b.get('resolution', 'N/A'):.2f}" if b.get('resolution') else "N/A"
+            jif = f"{b.get('journal_if', 'N/A'):.1f}" if b.get('journal_if') else "N/A"
+            identity = b.get('identity', 'N/A')
+            desc = b.get('description', '-')
+            # Extract organism from description
+            org_match = re.search(r'\[(.*?)\]', desc)
+            org = org_match.group(1) if org_match else '-'
+            prompt += f"| {b.get('pdb_id','N/A')} | {b.get('method','N/A')} | {res} Å | {jif} | {b.get('ligand','-')} | {b.get('release_date','N/A')} | {identity} | {org} |\n"
+    else:
+        prompt += "*无BLAST同源蛋白结果*\n"
+
+    prompt += f"""
+### 方法学统计
+- X-ray: {len(xray)} 个直接结构, {len(blast_xray)} 个BLAST结构
+- Cryo-EM: {len(cryoem)} 个直接结构, {len(blast_cryoem)} 个BLAST结构  
+- NMR: {len(nmr)} 个直接结构
+
+### 分辨率概况
+- 直接结构最佳分辨率: {f'{best_res:.2f} Å' if best_res else 'N/A'}
+- BLAST结构最佳分辨率: {f'{best_blast_res:.2f} Å' if best_blast_res else 'N/A'}
+- 期刊平均IF: {avg_jif:.1f}
+
+### 配体汇总
+{', '.join(ligand_summary) if ligand_summary else '无明确配体信息'}
+
+### 评分
+{json.dumps(scores, ensure_ascii=False, indent=2) if scores else '无评分数据'}
+
+## 报告要求
+
+请生成一份完整的专业评估报告，包括：
+
+1. **执行摘要**（3-5句话）：蛋白功能、可用结构数量和质量、可行性结论
+2. **蛋白功能概述**：基于UniProt功能描述，简述蛋白功能和研究意义
+3. **结构覆盖度分析**：直接结构和BLAST同源结构的区域覆盖情况
+4. **同源蛋白结构分析**：
+   - 分辨率分布统计（分档说明）
+   - 高质量结构推荐（按分辨率和同一性筛选 Top 5）
+   - 配体分析（常见配体及功能意义）
+5. **可行性评估**：X-ray / Cryo-EM / NMR 三种方法的推荐度及理由
+6. **实验建议**：推荐的表达系统、construct设计、Cryo-EM制样方案等
+7. **关键参考文献**：引用高IF期刊的代表性结构（3-5篇）
+
+**格式要求**：
+- 使用 Markdown 格式
+- 报告语言：中文为主，专业术语可保留英文
+- 标题使用 # 一级标题
+- 表格使用 | 语法
+- 报告末尾注明"本报告由 LLM 基于结构数据自动生成"
+- 保持专业性和可读性，避免流水账式罗列
+
+请直接输出报告正文，不要有额外的解释说明。
+"""
+    return prompt
+
+
+def _generate_llm_evaluation_report(uniprot_id: str) -> str:
+    """Generate LLM-powered evaluation report and save to DB. Returns markdown content."""
+    try:
+        # Load data from DB
+        conn = get_eval_db()
+        
+        # Get evaluation metadata
+        row = conn.execute("SELECT * FROM evaluations WHERE uniprot_id=?", (uniprot_id,)).fetchone()
+        if not row:
+            conn.close()
+            return None
+        cols = [d[0] for d in conn.execute("SELECT * FROM evaluations LIMIT 0").description]
+        eval_data = dict(zip(cols, row))
+        
+        # Get direct structures
+        struct_rows = conn.execute(
+            "SELECT * FROM evaluation_pdb_structures WHERE uniprot_id=? ORDER BY pdb_id", (uniprot_id,)
+        ).fetchall()
+        s_cols = [d[0] for d in conn.execute("SELECT * FROM evaluation_pdb_structures LIMIT 0").description]
+        structures = [dict(zip(s_cols, r)) for r in struct_rows]
+        
+        # Get BLAST results
+        blast_rows = conn.execute(
+            "SELECT * FROM evaluation_blast_results WHERE uniprot_id=? ORDER BY identity DESC", (uniprot_id,)
+        ).fetchall()
+        b_cols = [d[0] for d in conn.execute("SELECT * FROM evaluation_blast_results LIMIT 0").description]
+        blast_results = [dict(zip(b_cols, r)) for r in blast_rows]
+        conn.close()
+        
+        # Build prompt
+        import json
+        uniprot_block = {
+            'uniprot_id': uniprot_id,
+            'protein_name': eval_data.get('protein_name', ''),
+            'gene_names': eval_data.get('gene_names', '').split(', ') if eval_data.get('gene_names') else [],
+            'organism': eval_data.get('organism', ''),
+            'sequence_length': eval_data.get('sequence_length', 0),
+            'function': ''
+        }
+        
+        scores_raw = eval_data.get('scores', '{}')
+        try:
+            scores = json.loads(scores_raw) if scores_raw else {}
+        except:
+            scores = {}
+        
+        prompt = _build_llm_report_prompt(
+            uniprot_id, uniprot_block, structures, blast_results,
+            eval_data.get('coverage', 0), scores
+        )
+        
+        # Call LLM API - try OpenAI first, then Claude
+        report_content = None
+        
+        # Try MiniMax Moonshot (abab6.5s-chat supports 200k context)
+        moonshot_key = os.getenv('MINIMAX_API_KEY')
+        if moonshot_key and moonshot_key not in ('', 'your-key-here'):
+            try:
+                import openai
+                client = openai.OpenAI(api_key=moonshot_key, base_url="https://api.minimax.chat/v1")
+                response = client.chat.completions.create(
+                    model="abab6.5s-chat",
+                    messages=[
+                        {"role": "system", "content": "你是一位专业的结构生物学研究员，擅长蛋白质结构可行性评估。请根据提供的数据生成专业、详细的评估报告。"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=4096,
+                    temperature=0.3
+                )
+                report_content = response.choices[0].message.content
+                logging.info(f"[_generate_llm_report] MiniMax/abab6.5s-chat generated {len(report_content)} chars for {uniprot_id}")
+            except Exception as e:
+                logging.warning(f"[_generate_llm_report] MiniMax/abab6.5s-chat error: {e}")
+
+        # Try OpenAI
+        if not report_content:
+            openai_key = os.getenv('OPENAI_API_KEY')
+            if openai_key and openai_key not in ('your-key-here', '', 'sk-'):
+                try:
+                    import openai
+                    client = openai.OpenAI(api_key=openai_key)
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "你是一位专业的结构生物学研究员，擅长蛋白质结构可行性评估。请根据提供的数据生成专业、详细的评估报告。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        max_tokens=4096,
+                        temperature=0.3
+                    )
+                    report_content = response.choices[0].message.content
+                    logging.info(f"[_generate_llm_report] OpenAI/gpt-4o-mini generated {len(report_content)} chars for {uniprot_id}")
+                except Exception as e:
+                    logging.warning(f"[_generate_llm_report] OpenAI error: {e}")
+
+        # Try Anthropic
+        if not report_content:
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if anthropic_key and anthropic_key not in ('', 'your-key-here'):
+                try:
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=anthropic_key)
+                    response = client.messages.create(
+                        model="claude-3-5-haiku-20241106",
+                        max_tokens=4096,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    report_content = response.content[0].text
+                    logging.info(f"[_generate_llm_report] Anthropic/claude-3-5-haiku generated {len(report_content)} chars for {uniprot_id}")
+                except Exception as e:
+                    logging.warning(f"[_generate_llm_report] Anthropic error: {e}")
+
+        if not report_content:
+            logging.warning(f"[_generate_llm_report] No LLM API key available for {uniprot_id}")
+            return None
+        
+        # Save to evaluation_reports table
+        save_evaluation_report(uniprot_id, report_content)
+        
+        return report_content
+    except Exception as e:
+        logging.error(f"[_generate_llm_report] error: {e}")
+        return None
+
+
+@app.route("/api/evaluation/report/generate/<uniprot_id>", methods=["POST"])
+def api_evaluation_report_generate(uniprot_id: str):
+    """Generate LLM evaluation report for a UniProt ID and save to DB.
+    
+    Called automatically after evaluation completes, or manually via POST.
+    Returns the generated markdown content.
+    """
+    if not uniprot_id or not re.match(r'^[A-Z0-9]+$', uniprot_id, re.I):
+        return jsonify({"error": "Invalid UniProt ID"}), 400
+    
+    try:
+        # Check if evaluation exists
+        conn = get_eval_db()
+        row = conn.execute("SELECT uniprot_id FROM evaluations WHERE uniprot_id=?", (uniprot_id,)).fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": f"Evaluation for {uniprot_id} not found. Run /api/evaluate first."}), 404
+        
+        report = _generate_llm_evaluation_report(uniprot_id)
+        if report is None:
+            return jsonify({"error": "Report generation failed (check API keys)"}), 500
+        
+        return Response(report, mimetype="text/markdown; charset=utf-8")
+    except Exception as e:
+        logging.error(f"[api_evaluation_report_generate] error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/evaluation/report/<uniprot_id>", methods=["PUT"])
+def api_evaluation_report_put(uniprot_id: str):
+    'AI agent saves an LLM-generated evaluation report via this endpoint.'
+    if not uniprot_id or not re.match(r'^[A-Z0-9]+$', uniprot_id, re.I):
+        return jsonify({"error": "Invalid UniProt ID"}), 400
+    try:
+        report_content = request.get_data(as_text=True)
+        # Normalize literal \\n (backslash+n) to real newlines for proper markdown parsing
+        report_content = report_content.replace('\\n', '\n')
+        if not report_content or len(report_content) < 20:
+            return jsonify({"error": "Report content too short"}), 400
+        title_match = re.search(r'^#\s+(.+)$', report_content, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else f"{uniprot_id} structure feasibility evaluation"
+        filename = f"{uniprot_id}_feasibility_report.md"
+        save_evaluation_report(uniprot_id, report_content, filename)
+        logging.info(f"[api_evaluation_report_put] saved {uniprot_id} ({len(report_content)} chars)")
+        return jsonify({"success": True, "uniprot_id": uniprot_id, "filename": filename})
+    except Exception as e:
+        logging.error(f"[api_evaluation_report_put] error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def _normalize_eval_markdown(content: str) -> str:
+    """Normalize single-line markdown by inserting newlines before headings."""
+    if not content:
+        return content
+    lines = []
+    for line in content.split('\n'):
+        result = []
+        i = 0
+        while i < len(line):
+            m = re.search(r'(?<=[^\n])#{1,6} ', line[i:])
+            if m and m.start() > 0:
+                result.append(line[i:i+m.start()])
+                result.append('\n')
+                result.append(line[i+m.start():i+m.end()])
+                i += m.end()
+            else:
+                result.append(line[i:])
+                break
+        lines.append(''.join(result))
+    return '\n'.join(lines)
+
+
 
 def _generate_evaluation_report(data: dict) -> str:
     uniprot = data.get('uniprot', {})
@@ -1408,10 +2735,26 @@ def _generate_evaluation_report(data: dict) -> str:
     if blast:
         lines.append("\n## 同源蛋白 (BLAST搜索)\n")
         lines.append(f"找到 {len(blast)} 个相似蛋白:\n\n")
-        lines.append("| UniProt ID | 基因名 | 蛋白质名称 |\n")
-        lines.append("|------------|--------|------------|\n")
-        for r in blast[:15]:
-            lines.append(f"| {r.get('uniprot_id')} | {r.get('gene_name', 'N/A')} | {r.get('protein_name', 'N/A')} |\n")
+        # Real BLAST results have pdb_id; taxonomy fallback has uniprot_id
+        has_pdb = any('pdb_id' in r and r.get('pdb_id') for r in blast)
+        if has_pdb:
+            lines.append("| PDB ID | 相似度 | E-value | 描述 |\n")
+            lines.append("|--------|--------|---------|------|\n")
+            for r in blast[:15]:
+                pid = r.get('pdb_id', r.get('uniprot_id', 'N/A'))
+                identity_raw = r.get('identity', 0)
+                qcov = r.get('query_coverage', 0)
+                identity = round((identity_raw / qcov) * 100) if qcov > 0 else identity_raw
+                identity = min(identity, 100)
+                evalue = r.get('evalue', None)
+                evalue_str = f"{evalue:.1e}" if evalue is not None else '-'
+                desc = r.get('title') or r.get('description', r.get('protein_name', ''))[:60]
+                lines.append(f"| {pid} | {identity}% | {evalue_str} | {desc} |\n")
+        else:
+            lines.append("| UniProt ID | 基因名 | 蛋白质名称 |\n")
+            lines.append("|------------|--------|------------|\n")
+            for r in blast[:15]:
+                lines.append(f"| {r.get('uniprot_id')} | {r.get('gene_name', 'N/A')} | {r.get('protein_name', 'N/A')} |\n")
 
     lines.append("\n## 实验建议\n")
     if coverage >= 80 and len(structures) >= 3:
@@ -1466,6 +2809,22 @@ def _calculate_feasibility_scores(data: dict) -> dict:
     nmr_score = max(1, min(10, nmr_score))
     scores['NMR'] = {'score': nmr_score, 'assessment': '推荐' if nmr_score >= 7 else '可行' if nmr_score >= 5 else '困难'}
 
+    # Bonus: real BLAST homologs boost feasibility
+    blast = data.get('blast_results', [])
+    real_blast = [r for r in blast if r.get('source') == 'BLAST']
+    if real_blast:
+        max_identity = max((r.get('identity', 0) for r in real_blast), default=0)
+        if max_identity >= 80:
+            xr_score = min(10, xr_score + 3)
+            em_score = min(10, em_score + 2)
+        elif max_identity >= 50:
+            xr_score = min(10, xr_score + 2)
+            em_score = min(10, em_score + 1)
+        elif max_identity >= 30:
+            xr_score = min(10, xr_score + 1)
+        scores['X-ray'] = {'score': xr_score, 'assessment': '推荐' if xr_score >= 7 else '可行' if xr_score >= 5 else '困难'}
+        scores['Cryo-EM'] = {'score': em_score, 'assessment': '高度推荐' if em_score >= 8 else '推荐' if em_score >= 6 else '困难'}
+
     return scores
 
 # ─── Flask routes ───────────────────────────────────────────────────────────
@@ -1476,9 +2835,25 @@ def api_evaluate():
     uniprot_id = request.args.get("uniprot", "").strip()
     if not uniprot_id:
         return jsonify({"success": False, "error": "UniProt ID required"}), 400
-    result = evaluate_uniprot(uniprot_id)
+    force_blast = request.args.get("force_blast", "").lower() in ("1", "true", "yes")
+    result = evaluate_uniprot(uniprot_id, force_blast=force_blast)
     if result.get('success'):
         save_evaluation(result)
+        # Trigger async LLM report generation in background thread
+        def _generate_report_async():
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    f"http://localhost:5555/api/evaluation/report/generate/{uniprot_id}",
+                    method='POST'
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    logging.info(f"[api_evaluate] LLM report ready for {uniprot_id}, status={resp.status}")
+            except Exception as e:
+                logging.info(f"[api_evaluate] LLM report gen unavailable for {uniprot_id} -- AI agent will provide via PUT /api/evaluation/report/{uniprot_id}")
+        import threading
+        t = threading.Thread(target=_generate_report_async, daemon=True)
+        t.start()
     return jsonify(result)
 
 @app.route("/api/evaluations", methods=["GET"])
@@ -1503,6 +2878,87 @@ def api_evaluations_save():
         return jsonify({"success": False, "error": "uniprot_id required in body"}), 400
     ok = save_evaluation(data)
     return jsonify({"success": ok})
+
+@app.route("/api/evaluations/batch", methods=["POST"])
+def api_evaluations_batch():
+    """Run batch evaluation for multiple UniProt IDs. POST body: {uniprot_ids: [str], combined_report: str}"""
+    data = request.get_json() or {}
+    uniprot_ids = data.get('uniprot_ids', [])
+    combined_report = data.get('combined_report', '') or ''
+    if not uniprot_ids or not isinstance(uniprot_ids, list) or len(uniprot_ids) < 1:
+        return jsonify({'success': False, 'error': 'uniprot_ids (list) required'}), 400
+
+    # Generate batch_id from first ID + count
+    import hashlib
+    from datetime import datetime
+    batch_id = hashlib.md5((','.join(uniprot_ids) + datetime.now().isoformat()).encode()).hexdigest()[:12]
+    batch_id = f"batch-{batch_id}"
+
+    # Save each evaluation with batch_id
+    results = []
+    for uid in uniprot_ids:
+        result_data = {'uniprot_id': uid, 'batch_id': batch_id}
+        # Fetch evaluation data (from existing DB or compute)
+        try:
+            from evaluation_engine import EvaluationEngine
+            engine = EvaluationEngine()
+            eval_result = engine.evaluate(uid, force_blast=False)
+            eval_result['batch_id'] = batch_id
+            ok = save_evaluation(eval_result)
+            results.append({'uniprot_id': uid, 'saved': ok})
+        except Exception as e:
+            logging.error(f"[api_evaluations_batch] failed {uid}: {e}")
+            results.append({'uniprot_id': uid, 'saved': False, 'error': str(e)})
+
+    # Create the batch entry
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    try:
+        conn = get_eval_db()
+        conn.execute("""
+            INSERT OR REPLACE INTO evaluation_batches
+            (batch_id, title, combined_report, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(batch_id) DO UPDATE SET
+                title=excluded.title, combined_report=excluded.combined_report, updated_at=excluded.updated_at
+        """, (batch_id, f"Batch ({len(uniprot_ids)} targets)", combined_report, now, now))
+        conn.commit()
+        conn.close()
+        logging.info(f"[api_evaluations_batch] created batch {batch_id} with {len(uniprot_ids)} targets")
+        return jsonify({'success': True, 'batch_id': batch_id, 'results': results})
+    except Exception as e:
+        logging.error(f"[api_evaluations_batch] batch creation error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route("/api/evaluations/<uniprot_id>", methods=["DELETE"])
+def api_evaluation_delete(uniprot_id):
+    """Delete an evaluation and its associated batch membership."""
+    try:
+        conn = get_eval_db()
+        conn.execute("DELETE FROM evaluation_pdb_structures WHERE uniprot_id = ?", (uniprot_id,))
+        conn.execute("DELETE FROM evaluation_blast_results WHERE uniprot_id = ?", (uniprot_id,))
+        conn.execute("DELETE FROM evaluations WHERE uniprot_id = ?", (uniprot_id,))
+        conn.commit()
+        conn.close()
+        logging.info(f"[api_evaluation_delete] deleted {uniprot_id}")
+        return jsonify({'success': True})
+    except Exception as e:
+        logging.error(f"[api_evaluation_delete] error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route("/api/batches/<batch_id>", methods=["DELETE"])
+def api_batch_delete(batch_id):
+    """Delete a batch and unlink all its sub-target evaluations."""
+    try:
+        conn = get_eval_db()
+        conn.execute("UPDATE evaluations SET batch_id = NULL WHERE batch_id = ?", (batch_id,))
+        conn.execute("DELETE FROM evaluation_batches WHERE batch_id = ?", (batch_id,))
+        conn.commit()
+        conn.close()
+        logging.info(f"[api_batch_delete] deleted batch {batch_id}")
+        return jsonify({'success': True})
+    except Exception as e:
+        logging.error(f"[api_batch_delete] error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route("/api/evaluations/<uniprot_id>/structures")
 def api_evaluation_structures(uniprot_id):
@@ -1597,16 +3053,189 @@ def api_evaluation_report():
             ).fetchone()
         conn.close()
         if row and row['content']:
-            return Response(row['content'], mimetype="text/markdown; charset=utf-8")
+            normalized = _normalize_eval_markdown(row['content'])
+            return Response(normalized, mimetype="text/markdown; charset=utf-8")
         return jsonify({"error": "Evaluation report not found"}), 404
     except Exception as e:
         logging.error(f"[api_evaluation_report] error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
+# ─── Batch Evaluation API ───────────────────────────────────────────────────
+
+@app.route("/api/batches", methods=["GET"])
+def api_batches_list():
+    """List all evaluation batches."""
+    try:
+        conn = get_eval_db()
+        rows = conn.execute("""
+            SELECT b.*,
+                   COUNT(e.uniprot_id) as sub_target_count
+            FROM evaluation_batches b
+            LEFT JOIN evaluations e ON e.batch_id = b.batch_id
+            GROUP BY b.batch_id
+            ORDER BY b.created_at DESC
+        """).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            rd = dict(row)
+            result.append({
+                'batch_id': rd.get('batch_id') or '',
+                'title': rd.get('title') or rd.get('batch_id') or 'Batch',
+                'combined_report': rd.get('combined_report') or '',
+                'sub_target_count': rd.get('sub_target_count') or 0,
+                'created': rd.get('created_at') or '',
+            })
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"[api_batches_list] error: {e}")
+        return jsonify([])
+
+
+@app.route("/api/batches", methods=["POST"])
+def api_batches_create():
+    """Create or update a batch. POST body: {batch_id, title, combined_report, sub_target_ids[]}"""
+    data = request.get_json() or {}
+    batch_id = data.get('batch_id', '').strip()
+    if not batch_id:
+        return jsonify({'success': False, 'error': 'batch_id required'}), 400
+    title = data.get('title', '') or batch_id
+    combined_report = data.get('combined_report', '') or ''
+    sub_target_ids = data.get('sub_target_ids', []) or []
+    from datetime import datetime
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    try:
+        conn = get_eval_db()
+        conn.execute("""
+            INSERT OR REPLACE INTO evaluation_batches
+            (batch_id, title, combined_report, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(batch_id) DO UPDATE SET
+                title=excluded.title,
+                combined_report=excluded.combined_report,
+                updated_at=excluded.updated_at
+        """, (batch_id, title, combined_report, now, now))
+        # Update sub_targets to point to this batch
+        if sub_target_ids:
+            placeholders = ','.join(['?'] * len(sub_target_ids))
+            conn.execute(
+                f"UPDATE evaluations SET batch_id=? WHERE uniprot_id IN ({placeholders})",
+                [batch_id] + list(sub_target_ids)
+            )
+        conn.commit()
+        conn.close()
+        logging.info(f"[api_batches_create] batch={batch_id} with {len(sub_target_ids)} sub-targets")
+        return jsonify({'success': True, 'batch_id': batch_id})
+    except Exception as e:
+        logging.error(f"[api_batches_create] error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route("/api/batches/<batch_id>", methods=["GET"])
+def api_batch_get(batch_id):
+    """Get batch detail with all sub-target evaluations."""
+    try:
+        conn = get_eval_db()
+        batch_row = conn.execute(
+            "SELECT * FROM evaluation_batches WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        if not batch_row:
+            conn.close()
+            return jsonify({'error': 'Batch not found'}), 404
+        sub_rows = conn.execute("""
+            SELECT e.*, COUNT(p.pdb_id) as pdb_count
+            FROM evaluations e
+            LEFT JOIN evaluation_pdb_structures p ON e.uniprot_id = p.uniprot_id
+            WHERE e.batch_id = ?
+            GROUP BY e.uniprot_id
+            ORDER BY e.created_at DESC
+        """, (batch_id,)).fetchall()
+        import json as _json
+        sub_targets = []
+        for row in sub_rows:
+            rd = dict(row)
+            uid = rd['uniprot_id']
+            # Fetch PDB structures for this sub-target (in same conn before close)
+            pdb_rows = conn.execute(
+                "SELECT * FROM evaluation_pdb_structures WHERE uniprot_id = ? ORDER BY pdb_id", (uid,)
+            ).fetchall()
+            pdb_structures = []
+            for pr in pdb_rows:
+                pd = dict(pr)
+                pdb_structures.append({
+                    'pdb_id': pd['pdb_id'], 'method': pd['method'] or '', 'resolution': pd['resolution'],
+                    'title': pd['title'] or '', 'deposition_date': pd['deposition_date'] or '',
+                    'release_date': pd['release_date'] or '', 'ligand': pd['ligand'] or '',
+                    'journal_if': pd['journal_if'], 'if_tier': pd['if_tier'] or 'unknown'
+                })
+            # Fetch BLAST results for this sub-target
+            blast_rows = conn.execute(
+                "SELECT * FROM evaluation_blast_results WHERE uniprot_id = ? ORDER BY pdb_id", (uid,)
+            ).fetchall()
+            blast_results = []
+            for br in blast_rows:
+                bd = dict(br)
+                blast_results.append({
+                    'pdb_id': bd['pdb_id'] or '', 'method': bd['method'] or '',
+                    'resolution': bd['resolution'], 'title': bd['description'] or '',
+                    'identity': bd['identity'], 'evalue': bd['evalue'],
+                    'query_coverage': bd['query_coverage'], 'target_coverage': bd['target_coverage'],
+                    'journal_if': bd['journal_if'], 'if_tier': bd['if_tier'] or 'unknown',
+                    'ligand': bd['ligand'] or '', 'release_date': bd['release_date'] or ''
+                })
+            sub_targets.append({
+                'uniprot_id': uid,
+                'protein_name': rd.get('protein_name') or '',
+                'gene_name': rd.get('gene_names') or '',
+                'organism': rd.get('organism') or '',
+                'pdb_count': rd.get('pdb_count') or 0,
+                'coverage': rd.get('coverage') or 0,
+                'scores': _normalize_scores(_json.loads(rd.get('scores') or '{}') if rd.get('scores') else {}),
+                'created': rd.get('created_at') or '',
+                'pdb_structures': pdb_structures,
+                'blast_results': blast_results,
+            })
+        conn.close()  # Moved here - after all queries
+        return jsonify({
+            'batch_id': dict(batch_row).get('batch_id') or '',
+            'title': dict(batch_row).get('title') or batch_id,
+            'combined_report': dict(batch_row).get('combined_report') or '',
+            'created': dict(batch_row).get('created_at') or '',
+            'sub_targets': sub_targets,
+        })
+    except Exception as e:
+        logging.error(f"[api_batch_get] error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route("/api/batches/<batch_id>/report", methods=["PUT"])
+def api_batch_update_report(batch_id):
+    """Update combined report for a batch."""
+    data = request.get_json() or {}
+    combined_report = data.get('combined_report', '')
+    title = data.get('title', '')
+    from datetime import datetime
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    try:
+        conn = get_eval_db()
+        conn.execute("""
+            UPDATE evaluation_batches
+            SET combined_report=?, title=?, updated_at=?
+            WHERE batch_id=?
+        """, (combined_report, title, now, batch_id))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        logging.error(f"[api_batch_update_report] error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ─── Generate HTML + JS, then start ────────────────────────────────────────
 if __name__ == "__main__":
-    html = open('/tmp/pdb_scripts/pdb_index.html').read() if (SCRIPT_DIR / "pdb_index.html").exists() else None
+    html_path = SCRIPT_DIR / "pdb_index.html"
+    html = open(html_path).read() if html_path.exists() else None
     if not html:
         import urllib.request
         print("HTML file missing — please run /tmp/write_js.py first")
